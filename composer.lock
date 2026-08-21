@@ -1834,7 +1834,7 @@
                 "guzzlehttp/uri-template": "^1.0",
                 "laravel/prompts": "^0.3.0",
                 "laravel/serializable-closure": "^2.0.10",
-                "league/commonmark": "^2.8.1",
+                "league/commonmark": "^2.9.0",
                 "league/flysystem": "^3.25.1",
                 "league/flysystem-local": "^3.25.1",
                 "league/uri": "^7.5.1",
@@ -2455,7 +2455,7 @@
         },
         {
             "name": "league/commonmark",
-            "version": "2.8.2",
+            "version": "2.9.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/thephpleague/commonmark.git",
@@ -10528,7 +10528,7 @@
                 "pestphp/pest": "<4.0.0"
             },
             "require-dev": {
-                "composer/composer": "^2.8.10",
+                "composer/composer": "^2.9.00",
                 "pestphp/pest": "^4.0.0",
                 "pestphp/pest-dev-tools": "^4.0.0"
             },
