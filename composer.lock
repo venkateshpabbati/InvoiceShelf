@@ -2746,7 +2746,7 @@
                 "php": "^8.0.2"
             },
             "conflict": {
-                "guzzlehttp/guzzle": "<7.0",
+                "guzzlehttp/guzzle": "7.15.2",
                 "guzzlehttp/ringphp": "<1.1.1"
             },
             "type": "library",
