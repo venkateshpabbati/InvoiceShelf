@@ -17,7 +17,7 @@
     "prepare": "git config core.hooksPath .githooks || true"
   },
   "devDependencies": {
-    "@tailwindcss/typography": "^0.5.16",
+    "@tailwindcss/typography": "^0.5.20",
     "@tailwindcss/vite": "^4.0.0",
     "@types/lodash": "^4.17.24",
     "@typescript-eslint/parser": "^8.0.0",
