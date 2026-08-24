@@ -8,7 +8,7 @@ use Illuminate\Validation\Rule;
 class CreateCreditNoteRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * Whether this request may proceed at all.
      *
      * The controller authorizes the ability against the invoice being credited.
      */
@@ -18,7 +18,7 @@ class CreateCreditNoteRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * The shape a credit-note payload has to satisfy.
      *
      * "items" is optional: an absent or empty list credits every remaining
      * quantity of the invoice, which is the full reversal. Each supplied line

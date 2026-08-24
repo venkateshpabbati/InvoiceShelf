@@ -11,6 +11,19 @@ use App\Platform\Http\Controller;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
+/**
+ * Owner-side administration of the staff accounts inside the active company.
+ *
+ * The controller settles who may act and hands everything else on: the form
+ * request shapes the payload and the service owns every write. Ownership is
+ * positional and re-read on each call, so the same person administers members
+ * under one `company` header and is refused under the next.
+ *
+ * Note that the single-account routes bind their model installation-wide — an
+ * id belonging to another tenant resolves perfectly well and is turned away by
+ * the policy rather than by a missing row, which is a 403 where a 404 might be
+ * expected. Kept as it stands.
+ */
 class MembersController extends Controller
 {
     public function __construct(
@@ -18,7 +31,14 @@ class MembersController extends Controller
     ) {}
 
     /**
-     * Display a listing of the resource.
+     * A page of colleagues, newest first.
+     *
+     * The requester is struck from the rows but still counted in the envelope,
+     * so a company of three people shows two members underneath the number
+     * three. Kept as it stands.
+     *
+     * Page size defaults to ten, and unlike the other listings there is no
+     * sentinel for "everything" — a limit of `all` reaches the paginator as-is.
      *
      * @return JsonResponse
      */
@@ -26,24 +46,25 @@ class MembersController extends Controller
     {
         $this->authorize('viewAny', User::class);
 
-        $limit = $request->has('limit') ? $request->limit : 10;
+        $perPage = $request->has('limit') ? $request->limit : 10;
+        $viewer = $request->user();
 
-        $user = $request->user();
-
-        $users = User::whereCompany()
+        $members = User::whereCompany()
             ->applyFilters($request->all())
-            ->where('id', '<>', $user->id)
+            ->where('id', '<>', $viewer->id)
             ->latest()
-            ->paginate($limit);
+            ->paginate($perPage);
 
-        return UserResource::collection($users)
-            ->additional(['meta' => [
-                'user_total_count' => User::whereCompany()->count(),
-            ]]);
+        return UserResource::collection($members)->additional([
+            'meta' => ['user_total_count' => User::whereCompany()->count()],
+        ]);
     }
 
     /**
-     * Store a newly created resource in storage.
+     * Open a staff account and place it in the companies the form listed.
+     *
+     * Note the gate: only the active company is weighed, so an owner may file
+     * an account into any company whose id they care to submit.
      *
      * @return JsonResponse
      */
@@ -51,16 +72,16 @@ class MembersController extends Controller
     {
         $this->authorize('create', User::class);
 
-        $user = $this->memberService->create(
+        $member = $this->memberService->create(
             $request->getUserPayload(),
             $request->validated('companies'),
         );
 
-        return new UserResource($user);
+        return new UserResource($member);
     }
 
     /**
-     * Display the specified resource.
+     * One colleague, provided they share the active company with the caller.
      *
      * @return JsonResponse
      */
@@ -72,7 +93,7 @@ class MembersController extends Controller
     }
 
     /**
-     * Update the specified resource in storage.
+     * Overwrite a colleague's account and re-point their memberships.
      *
      * @return JsonResponse
      */
@@ -90,7 +111,16 @@ class MembersController extends Controller
     }
 
     /**
-     * Display a listing of the resource.
+     * Erase a batch of accounts.
+     *
+     * The submitted ids were checked against the users table installation-wide,
+     * then narrowed to members of the active company here, so an id belonging
+     * to somebody else's tenant clears validation and is quietly dropped from
+     * the batch — the call still answers success. Kept as it stands.
+     *
+     * The gate is the bulk ability rather than the per-account policy, so it
+     * asks nothing about the individual targets; the narrowing above is what
+     * keeps one company out of another's accounts.
      *
      * @param  Request  $request
      * @return JsonResponse
@@ -99,16 +129,16 @@ class MembersController extends Controller
     {
         $this->authorize('delete multiple users', User::class);
 
-        if ($request->users) {
-            // Scope the candidate ids to members of the acting company so a user
-            // from one company cannot delete accounts belonging to another.
-            $ids = User::whereCompany()
-                ->whereIn('id', $request->users)
+        $submitted = $request->users;
+
+        if ($submitted) {
+            $targets = User::whereCompany()
+                ->whereIn('id', $submitted)
                 ->pluck('id')
                 ->toArray();
 
-            if ($ids) {
-                $this->memberService->delete($ids);
+            if ($targets) {
+                $this->memberService->delete($targets);
             }
         }
 

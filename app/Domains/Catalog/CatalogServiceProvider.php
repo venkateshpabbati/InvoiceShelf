@@ -22,6 +22,7 @@ class CatalogServiceProvider extends ServiceProvider
     {
         Gate::policy(Item::class, ItemPolicy::class);
         Gate::policy(Unit::class, UnitPolicy::class);
-        Gate::define('delete multiple items', [ItemPolicy::class, 'deleteMultiple']);
+        $bulkItemDelete = [ItemPolicy::class, 'deleteMultiple'];
+        Gate::define('delete multiple items', $bulkItemDelete);
     }
 }

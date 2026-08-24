@@ -26,6 +26,23 @@ return new class extends Migration
             });
         }
 
+        // The forensic record of every legacy link this migration refused to
+        // turn into an allocation. Dropping payments.invoice_id destroys the
+        // only trace of the association, and a payment recorded against a
+        // draft invoice is a bookkeeping habit rather than a data fault: the
+        // link is worth keeping so it can be restored once the invoice is
+        // issued. Created on a fresh install too, so the repair command and
+        // its queries never have to test for the table's existence.
+        if (! Schema::hasTable('legacy_payment_links')) {
+            Schema::create('legacy_payment_links', function (Blueprint $table) {
+                $table->bigIncrements('id');
+                $table->unsignedBigInteger('payment_id')->unique();
+                $table->unsignedInteger('invoice_id');
+                $table->string('reason');
+                $table->timestamps();
+            });
+        }
+
         // A fresh install replays the historical payments migration before
         // reaching this migration. Existing v2/v3 databases arrive here with
         // the same nullable legacy column; a retry after a partial run does
@@ -71,6 +88,8 @@ return new class extends Migration
     public function down(): void
     {
         if (! Schema::hasTable('payment_allocations')) {
+            Schema::dropIfExists('legacy_payment_links');
+
             return;
         }
 
@@ -104,6 +123,10 @@ return new class extends Migration
         });
 
         Schema::dropIfExists('payment_allocations');
+        // Dropped last, after the refusal guards above: a rollback that is
+        // refused keeps the forensic link table, since the unapplied credit
+        // it documents is exactly what caused the refusal.
+        Schema::dropIfExists('legacy_payment_links');
     }
 
     private function backfillLegacyAllocations(): void
@@ -127,6 +150,8 @@ return new class extends Migration
                         'payment_id' => $payment->id,
                         'invoice_id' => $payment->invoice_id,
                     ]);
+
+                    $this->recordLegacyLink($payment, $invoice);
 
                     return;
                 }
@@ -154,6 +179,74 @@ return new class extends Migration
                     'updated_at' => $payment->payment_date,
                 ]);
             });
+    }
+
+    /**
+     * Keep the declined association on file before the column carrying it is
+     * dropped.
+     *
+     * A link is filed as 'draft' when the invoice is otherwise a perfectly
+     * good target and the only objection is that it never left the draft
+     * stage — the case `payments:restore-legacy-links` can put right once the
+     * invoice is issued. Everything else is a 'mismatch': a missing invoice, a
+     * credit note, or a target belonging to another company, contact or
+     * currency. Those are never repaired automatically and are kept purely so
+     * the operator can see what the association used to be.
+     */
+    private function recordLegacyLink(object $payment, ?object $invoice): void
+    {
+        // A rerun after the insert but before the legacy column disappears
+        // must not file the link, or the note, a second time.
+        if (DB::table('legacy_payment_links')->where('payment_id', $payment->id)->exists()) {
+            return;
+        }
+
+        $isDraftLink = $this->isDraftLegacyLink($payment, $invoice);
+
+        DB::table('legacy_payment_links')->insert([
+            'payment_id' => $payment->id,
+            'invoice_id' => $payment->invoice_id,
+            'reason' => $isDraftLink ? 'draft' : 'mismatch',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        if ($isDraftLink) {
+            $this->annotateDraftPayment($payment, $invoice);
+        }
+    }
+
+    /**
+     * Whether the draft status is the sole reason the link was declined.
+     */
+    private function isDraftLegacyLink(object $payment, ?object $invoice): bool
+    {
+        return $invoice
+            && (int) $payment->company_id === (int) $invoice->company_id
+            && (int) $payment->customer_id === (int) $invoice->customer_id
+            && (int) $payment->currency_id === (int) $invoice->currency_id
+            && ($invoice->type ?? 'INVOICE') === 'INVOICE'
+            && $invoice->status === 'DRAFT';
+    }
+
+    /**
+     * Tell the story on the receipt itself.
+     *
+     * The forensic table is invisible to whoever opens the payment, so the
+     * plain-text note is what explains why the money now sits as unapplied
+     * credit. It is appended, never substituted for whatever was there.
+     */
+    private function annotateDraftPayment(object $payment, object $invoice): void
+    {
+        $note = sprintf(
+            'Recorded against draft invoice %s before the 3.x upgrade; retained as unapplied customer credit.',
+            $invoice->invoice_number
+        );
+        $existing = (string) ($payment->notes ?? '');
+
+        DB::table('payments')->where('id', $payment->id)->update([
+            'notes' => $existing === '' ? $note : $existing."\n".$note,
+        ]);
     }
 
     private function isValidLegacyLink(object $payment, ?object $invoice): bool

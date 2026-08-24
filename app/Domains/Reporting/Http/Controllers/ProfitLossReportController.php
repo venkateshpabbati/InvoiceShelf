@@ -12,81 +12,124 @@ use App\Platform\Pdf\Facades\Pdf;
 use App\Platform\Pdf\Rendering\PdfPageSetup;
 use App\Platform\Pdf\Rendering\PdfTemplateUtils;
 use Carbon\Carbon;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\App;
 use Silber\Bouncer\BouncerFacade;
 
+/**
+ * Money in against money out over a period.
+ *
+ * Income is what was actually received in the window rather than what was
+ * billed, so an unpaid invoice contributes nothing; the other side is spending
+ * rolled up per category, each with a count and a sum. The two figures are
+ * handed over side by side and the template is what subtracts one from the
+ * other.
+ */
 class ProfitLossReportController extends Controller
 {
     /**
-     * Handle the incoming request.
+     * Render the report for the company the hash names.
      *
      * @param  string  $hash
-     * @return JsonResponse
      */
     public function __invoke(Request $request, $hash)
     {
-        $company = Company::where('unique_hash', $hash)->firstOrFail();
+        $company = $this->reportedCompany($hash);
 
-        // These routes carry no company header, so ScopeBouncer is not in their
-        // middleware stack and the ability scope was never set. 'view-financial-reports'
-        // is stored scoped to a company, so the unscoped check always failed and every
-        // report PDF answered 403. Scope to the company named in the URL: the policy
-        // still checks membership, so this grants nothing new.
+        App::setLocale(CompanySetting::getSetting('language', $company->id));
+
+        $window = $request->only(['from_date', 'to_date']);
+
+        $received = Payment::query()
+            ->whereCompanyId($company->id)
+            ->applyFilters($window)
+            ->sum('base_amount');
+
+        $spending = Expense::query()
+            ->with('category')
+            ->whereCompanyId($company->id)
+            ->applyFilters($window)
+            ->expensesAttributes()
+            ->get();
+
+        view()->share([
+            'income' => $received,
+            'expenseCategories' => $spending,
+            'totalExpense' => $spending->sum('total_amount'),
+        ] + $this->pageChrome($request, $company));
+
+        return $this->emit($request, 'profit-loss');
+    }
+
+    /**
+     * The company named by the hash, once the caller has been let through.
+     *
+     * Nothing upstream tells Bouncer which company to weigh abilities against:
+     * these links carry no company header, and the report ability is stored
+     * per company, so the unscoped check matched nothing and every report
+     * answered 403. Pointing the scope at the company in the URL settles that
+     * without widening access, because the policy still asks for membership.
+     * The hash is an address, not a credential.
+     *
+     * @param  string  $hash
+     */
+    private function reportedCompany($hash): Company
+    {
+        $company = Company::query()->where('unique_hash', $hash)->firstOrFail();
+
         BouncerFacade::scope()->to($company->id);
 
         $this->authorize('view report', $company);
 
-        $locale = CompanySetting::getSetting('language', $company->id);
+        return $company;
+    }
 
-        App::setLocale($locale);
+    /**
+     * What every report prints around its figures: the company and its logo,
+     * the window in the company's own date format, and the currency the
+     * amounts are stated in.
+     *
+     * @return array<string, mixed>
+     */
+    private function pageChrome(Request $request, Company $company): array
+    {
+        $pattern = CompanySetting::getSetting('carbon_date_format', $company->id);
+        $opened = Carbon::createFromFormat('Y-m-d', $request->from_date)->translatedFormat($pattern);
+        $closed = Carbon::createFromFormat('Y-m-d', $request->to_date)->translatedFormat($pattern);
+        $currencyId = CompanySetting::getSetting('currency', $company->id);
+        $currency = Currency::findOrFail($currencyId);
 
-        $paymentsAmount = Payment::whereCompanyId($company->id)
-            ->applyFilters($request->only(['from_date', 'to_date']))
-            ->sum('base_amount');
-
-        $expenseCategories = Expense::with('category')
-            ->whereCompanyId($company->id)
-            ->applyFilters($request->only(['from_date', 'to_date']))
-            ->expensesAttributes()
-            ->get();
-
-        $totalAmount = 0;
-        foreach ($expenseCategories as $category) {
-            $totalAmount += $category->total_amount;
-        }
-
-        $dateFormat = CompanySetting::getSetting('carbon_date_format', $company->id);
-        $from_date = Carbon::createFromFormat('Y-m-d', $request->from_date)->translatedFormat($dateFormat);
-        $to_date = Carbon::createFromFormat('Y-m-d', $request->to_date)->translatedFormat($dateFormat);
-        $currency = Currency::findOrFail(CompanySetting::getSetting('currency', $company->id));
-
-        view()->share([
-            'income' => $paymentsAmount,
-            'expenseCategories' => $expenseCategories,
-            'totalExpense' => $totalAmount,
+        return [
             'company' => $company,
             'logo' => $company->logo_path,
-            'from_date' => $from_date,
-            'to_date' => $to_date,
+            'from_date' => $opened,
+            'to_date' => $closed,
             'currency' => $currency,
-        ]);
-        // Renders a same-named file from storage/app/templates/pdf/reports/
-        // when one exists, so a report can be overridden without a
-        // template picker it has no concept of.
-        $templatePath = PdfTemplateUtils::resolveView('reports', 'profit-loss');
+        ];
+    }
 
-        $pdf = Pdf::loadView($templatePath, [], PdfPageSetup::forReports());
+    /**
+     * Hand the rendered report over in whichever of the three shapes the query
+     * string asks for.
+     *
+     * Reports have no template chooser, so an override is a file of the same
+     * name dropped into storage/app/templates/pdf/reports/, which the resolver
+     * prefers over the built-in one.
+     *
+     * The document is built before the preview branch is taken and not after:
+     * a preview costs a full render it never uses, which is wasteful but is
+     * also what the templates have always been exercised through.
+     */
+    private function emit(Request $request, string $design)
+    {
+        $design = PdfTemplateUtils::resolveView('reports', $design);
 
-        if ($request->has('preview')) {
-            return view($templatePath);
+        $document = Pdf::loadView($design, [], PdfPageSetup::forReports());
+
+        if ($request->exists('preview')) {
+            return view($design);
         }
 
-        if ($request->has('download')) {
-            return $pdf->download();
-        }
-
-        return $pdf->stream();
+        return $request->exists('download') ? $document->download() : $document->stream();
     }
 }

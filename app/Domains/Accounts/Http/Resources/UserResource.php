@@ -6,42 +6,54 @@ use App\Domains\Money\Http\Resources\CurrencyResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
+/**
+ * A staff account as the admin API publishes it.
+ *
+ * Besides the stored columns it answers the two authorisation questions the SPA
+ * asks about the caller (whether they own the active company, and whether they
+ * are the platform administrator) and carries the roles held in the current
+ * scope, the creation date already formatted for the active company, and the
+ * currency and companies whenever those exist. The avatar is whatever the model
+ * exposes: a media URL, or the literal number zero when none is on file.
+ */
 class UserResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
-     *
      * @param  Request  $request
      */
     public function toArray($request): array
     {
+        $user = $this->resource;
+
         return [
-            'id' => $this->id,
-            'name' => $this->name,
-            'email' => $this->email,
-            'phone' => $this->phone,
-            'role' => $this->role,
-            'contact_name' => $this->contact_name,
-            'company_name' => $this->company_name,
-            'website' => $this->website,
-            'enable_portal' => $this->enable_portal,
-            'currency_id' => $this->currency_id,
-            'facebook_id' => $this->facebook_id,
-            'google_id' => $this->google_id,
-            'github_id' => $this->github_id,
-            'created_at' => $this->created_at,
-            'updated_at' => $this->updated_at,
-            'avatar' => $this->avatar,
-            'is_owner' => $this->isOwner(),
-            'is_super_admin' => $this->isSuperAdmin(),
-            'roles' => $this->roles,
-            'formatted_created_at' => $this->formattedCreatedAt,
-            'currency' => $this->when($this->currency()->exists(), function () {
-                return new CurrencyResource($this->currency);
-            }),
-            'companies' => $this->when($this->companies()->exists(), function () {
-                return CompanyResource::collection($this->companies);
-            }),
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'phone' => $user->phone,
+            'role' => $user->role,
+            'contact_name' => $user->contact_name,
+            'company_name' => $user->company_name,
+            'website' => $user->website,
+            'enable_portal' => $user->enable_portal,
+            'currency_id' => $user->currency_id,
+            'facebook_id' => $user->facebook_id,
+            'google_id' => $user->google_id,
+            'github_id' => $user->github_id,
+            'created_at' => $user->created_at,
+            'updated_at' => $user->updated_at,
+            'avatar' => $user->avatar,
+            'is_owner' => $user->isOwner(),
+            'is_super_admin' => $user->isSuperAdmin(),
+            'roles' => $user->roles,
+            'formatted_created_at' => $user->formattedCreatedAt,
+            'currency' => $this->when(
+                $user->currency()->exists(),
+                fn () => new CurrencyResource($user->currency)
+            ),
+            'companies' => $this->when(
+                $user->companies()->exists(),
+                fn () => CompanyResource::collection($user->companies)
+            ),
         ];
     }
 }

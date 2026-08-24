@@ -11,38 +11,69 @@ use App\Domains\Money\Models\Currency;
 use App\Domains\Taxation\Models\Tax;
 use App\Support\SafeOrderBy;
 use Carbon\Carbon;
-use Cron;
+use Cron\CronExpression;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
+/**
+ * A standing order that mints invoices on a timetable.
+ *
+ * The row carries a whole invoice in template form — amounts, items and taxes,
+ * kept in the same shape a real document uses — together with the cron
+ * expression that decides when the next copy falls due and the limit, if any,
+ * that eventually retires the schedule.
+ */
 class RecurringInvoice extends Model
 {
-    protected $table = 'recurring_invoices';
-
     use HasCustomFields;
     use HasFactory;
+
+    /**
+     * Limit mode: keep issuing invoices indefinitely.
+     */
+    public const NONE = 'NONE';
+
+    /**
+     * Limit mode: stop after a set number of invoices has been issued.
+     */
+    public const COUNT = 'COUNT';
+
+    /**
+     * Limit mode: stop once the schedule passes its end date.
+     */
+    public const DATE = 'DATE';
+
+    /**
+     * The schedule has run its course and issues nothing further.
+     */
+    public const COMPLETED = 'COMPLETED';
+
+    /**
+     * The schedule is paused by hand.
+     */
+    public const ON_HOLD = 'ON_HOLD';
+
+    /**
+     * The schedule is live and due to fire on its cron expression.
+     */
+    public const ACTIVE = 'ACTIVE';
+
+    protected $table = 'recurring_invoices';
 
     protected $guarded = [
         'id',
     ];
 
+    /**
+     * Kept from an older Eloquent generation, which read this list to cast the
+     * named columns to dates. Current Eloquent ignores the property, so
+     * starts_at is handed around as the plain string the driver returns.
+     */
     protected $dates = [
         'starts_at',
     ];
-
-    public const NONE = 'NONE';
-
-    public const COUNT = 'COUNT';
-
-    public const DATE = 'DATE';
-
-    public const COMPLETED = 'COMPLETED';
-
-    public const ON_HOLD = 'ON_HOLD';
-
-    public const ACTIVE = 'ACTIVE';
 
     protected $appends = [
         'formattedCreatedAt',
@@ -51,6 +82,9 @@ class RecurringInvoice extends Model
         'formattedLimitDate',
     ];
 
+    /**
+     * Attribute casts.
+     */
     protected function casts(): array
     {
         return [
@@ -59,167 +93,244 @@ class RecurringInvoice extends Model
         ];
     }
 
-    public function getFormattedStartsAtAttribute()
-    {
-        $dateFormat = CompanySetting::getSetting('carbon_date_format', $this->company_id);
-
-        return Carbon::parse($this->starts_at)->translatedFormat($dateFormat);
-    }
-
-    public function getFormattedNextInvoiceAtAttribute()
-    {
-        $dateFormat = CompanySetting::getSetting('carbon_date_format', $this->company_id);
-
-        return Carbon::parse($this->next_invoice_at)->translatedFormat($dateFormat);
-    }
-
-    public function getFormattedLimitDateAttribute()
-    {
-        $dateFormat = CompanySetting::getSetting('carbon_date_format', $this->company_id);
-
-        return Carbon::parse($this->limit_date)->format($dateFormat);
-    }
-
-    public function getFormattedCreatedAtAttribute()
-    {
-        $dateFormat = CompanySetting::getSetting('carbon_date_format', $this->company_id);
-
-        return Carbon::parse($this->created_at)->format($dateFormat);
-    }
-
+    /**
+     * Invoices this schedule has produced so far.
+     */
     public function invoices(): HasMany
     {
-        return $this->hasMany(Invoice::class);
+        return $this->hasMany(Invoice::class, 'recurring_invoice_id');
     }
 
+    /**
+     * Taxes carried by the template, at document level.
+     */
     public function taxes(): HasMany
     {
-        return $this->hasMany(Tax::class);
+        return $this->hasMany(Tax::class, 'recurring_invoice_id');
     }
 
+    /**
+     * Line items the generated invoices are built from.
+     */
     public function items(): HasMany
     {
-        return $this->hasMany(InvoiceItem::class);
+        return $this->hasMany(InvoiceItem::class, 'recurring_invoice_id');
     }
 
+    /**
+     * Contact every generated invoice is billed to.
+     */
     public function customer(): BelongsTo
     {
-        return $this->belongsTo(Customer::class);
+        return $this->belongsTo(Customer::class, 'customer_id');
     }
 
+    /**
+     * Company the schedule was set up under.
+     */
     public function company(): BelongsTo
     {
-        return $this->belongsTo(Company::class);
+        return $this->belongsTo(Company::class, 'company_id');
     }
 
+    /**
+     * Author of the schedule, linked through the creator_id column.
+     */
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'creator_id');
     }
 
+    /**
+     * Currency the template amounts are stated in.
+     */
     public function currency(): BelongsTo
     {
-        return $this->belongsTo(Currency::class);
+        return $this->belongsTo(Currency::class, 'currency_id');
     }
 
+    /**
+     * Start of the schedule, written in the company's date format and in the
+     * language the application is running in.
+     */
+    public function getFormattedStartsAtAttribute()
+    {
+        return Carbon::parse($this->starts_at)->translatedFormat($this->companyDateFormat());
+    }
+
+    /**
+     * The moment the next invoice is due, written in the company's date format
+     * and in the language the application is running in.
+     */
+    public function getFormattedNextInvoiceAtAttribute()
+    {
+        return Carbon::parse($this->next_invoice_at)->translatedFormat($this->companyDateFormat());
+    }
+
+    /**
+     * End date of a date-limited schedule, written in the company's date
+     * format. Unlike the two above it is not translated.
+     */
+    public function getFormattedLimitDateAttribute()
+    {
+        return Carbon::parse($this->limit_date)->format($this->companyDateFormat());
+    }
+
+    /**
+     * Creation date, written in the company's date format and untranslated.
+     */
+    public function getFormattedCreatedAtAttribute()
+    {
+        return Carbon::parse($this->created_at)->format($this->companyDateFormat());
+    }
+
+    /**
+     * Narrow to the company the current request is acting on.
+     */
     public function scopeWhereCompany($query)
     {
-        $query->where('recurring_invoices.company_id', request()->header('company'));
+        $company = request()->header('company');
+
+        return $query->where($this->qualifyColumn('company_id'), $company);
     }
 
+    /**
+     * Return the whole result set for the sentinel limit "all", otherwise a
+     * page of the requested size.
+     */
     public function scopePaginateData($query, $limit)
     {
-        if ($limit == 'all') {
-            return $query->get();
-        }
-
-        return $query->paginate($limit);
+        return $limit == 'all' ? $query->get() : $query->paginate($limit);
     }
 
+    /**
+     * Sort by a caller-supplied column, sanitised before it reaches SQL.
+     */
     public function scopeWhereOrder($query, $orderByField, $orderBy)
     {
-        SafeOrderBy::apply($query, $orderByField, $orderBy);
+        return SafeOrderBy::apply($query, $orderByField, $orderBy);
     }
 
+    /**
+     * Keep only schedules sitting in one lifecycle state.
+     */
     public function scopeWhereStatus($query, $status)
     {
-        return $query->where('recurring_invoices.status', $status);
+        return $query->where($this->qualifyColumn('status'), $status);
     }
 
+    /**
+     * Keep only the schedules billed to one contact.
+     */
     public function scopeWhereCustomer($query, $customer_id)
     {
-        $query->where('customer_id', $customer_id);
+        return $query->where('customer_id', $customer_id);
     }
 
+    /**
+     * Keep only schedules whose start date falls inside the inclusive range.
+     */
     public function scopeRecurringInvoicesStartBetween($query, $start, $end)
     {
-        return $query->whereBetween(
-            'starts_at',
-            [$start->format('Y-m-d'), $end->format('Y-m-d')]
-        );
+        return $query->whereBetween('starts_at', [
+            $start->format('Y-m-d'),
+            $end->format('Y-m-d'),
+        ]);
     }
 
+    /**
+     * Keep only schedules whose contact matches every whitespace-separated
+     * term, a term counting as matched when it appears in the contact's name,
+     * the contact person or the company name.
+     */
     public function scopeWhereSearch($query, $search)
     {
-        foreach (explode(' ', $search) as $term) {
-            $query->whereHas('customer', function ($query) use ($term) {
-                $query->where('name', 'LIKE', '%'.$term.'%')
-                    ->orWhere('contact_name', 'LIKE', '%'.$term.'%')
-                    ->orWhere('company_name', 'LIKE', '%'.$term.'%');
+        $terms = explode(' ', $search);
+
+        foreach ($terms as $term) {
+            $query->whereHas('customer', function ($customer) use ($term) {
+                $needle = '%'.$term.'%';
+
+                $customer->where('name', 'LIKE', $needle)
+                    ->orWhere('contact_name', 'LIKE', $needle)
+                    ->orWhere('company_name', 'LIKE', $needle);
             });
         }
     }
 
+    /**
+     * Run every listed filter that carries a value.
+     */
     public function scopeApplyFilters($query, array $filters)
     {
-        $filters = collect($filters);
+        $status = $filters['status'] ?? null;
+        $search = $filters['search'] ?? null;
+        $from = $filters['from_date'] ?? null;
+        $to = $filters['to_date'] ?? null;
+        $customer = $filters['customer_id'] ?? null;
 
-        if ($filters->get('status') && $filters->get('status') !== 'ALL') {
-            $query->whereStatus($filters->get('status'));
+        if ($status && $status !== 'ALL') {
+            $query->whereStatus($status);
         }
 
-        if ($filters->get('search')) {
-            $query->whereSearch($filters->get('search'));
+        if ($search) {
+            $query->whereSearch($search);
         }
 
-        if ($filters->get('from_date') && $filters->get('to_date')) {
-            $start = Carbon::createFromFormat('Y-m-d', $filters->get('from_date'));
-            $end = Carbon::createFromFormat('Y-m-d', $filters->get('to_date'));
-            $query->recurringInvoicesStartBetween($start, $end);
+        if ($from && $to) {
+            $query->recurringInvoicesStartBetween(
+                Carbon::createFromFormat('Y-m-d', $from),
+                Carbon::createFromFormat('Y-m-d', $to)
+            );
         }
 
-        if ($filters->get('customer_id')) {
-            $query->whereCustomer($filters->get('customer_id'));
+        if ($customer) {
+            $query->whereCustomer($customer);
         }
 
-        if ($filters->get('orderByField') || $filters->get('orderBy')) {
-            $field = $filters->get('orderByField') ? $filters->get('orderByField') : 'created_at';
-            $orderBy = $filters->get('orderBy') ? $filters->get('orderBy') : 'asc';
-            $query->whereOrder($field, $orderBy);
+        $sortField = $filters['orderByField'] ?? null;
+        $sortDirection = $filters['orderBy'] ?? null;
+
+        if ($sortField || $sortDirection) {
+            $query->whereOrder($sortField ?: 'created_at', $sortDirection ?: 'asc');
         }
     }
 
+    /**
+     * Retire the schedule, so that no further invoice is generated from it.
+     */
     public function markStatusAsCompleted(): void
     {
-        if ($this->status == $this->status) {
-            $this->status = self::COMPLETED;
-            $this->save();
-        }
+        $this->status = static::COMPLETED;
+        $this->save();
     }
 
+    /**
+     * The moment a cron expression next fires, counted from the given start
+     * date rather than from now, in the application's own time zone.
+     */
     public static function getNextInvoiceDate(string $frequency, string $starts_at): string
     {
-        $cron = new Cron\CronExpression($frequency);
-        $timezone = config('app.timezone', 'UTC');
+        $schedule = new CronExpression($frequency);
+        $zone = config('app.timezone', 'UTC');
 
-        return $cron->getNextRunDate($starts_at, 0, false, $timezone)->format('Y-m-d H:i:s');
+        return $schedule->getNextRunDate($starts_at, 0, false, $zone)->format('Y-m-d H:i:s');
     }
 
+    /**
+     * Recompute and store the date the next invoice falls due.
+     */
     public function updateNextInvoiceDate(): void
     {
-        $nextInvoiceAt = self::getNextInvoiceDate($this->frequency, $this->starts_at);
-
-        $this->next_invoice_at = $nextInvoiceAt;
+        $this->next_invoice_at = self::getNextInvoiceDate($this->frequency, $this->starts_at);
         $this->save();
+    }
+
+    /**
+     * The date format the owning company writes dates in.
+     */
+    private function companyDateFormat()
+    {
+        return CompanySetting::getSetting('carbon_date_format', $this->company_id);
     }
 }

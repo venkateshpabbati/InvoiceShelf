@@ -12,9 +12,7 @@ class FormatsController extends Controller
 {
     public function dateFormats(): JsonResponse
     {
-        return response()->json([
-            'date_formats' => DateFormatter::get_list(),
-        ]);
+        return response()->json(['date_formats' => DateFormatter::get_list()]);
     }
 
     public function timeFormats(): JsonResponse
@@ -26,8 +24,6 @@ class FormatsController extends Controller
 
     public function timezones(): JsonResponse
     {
-        return response()->json([
-            'time_zones' => TimeZones::get_list(),
-        ]);
+        return response()->json(['time_zones' => TimeZones::get_list()]);
     }
 }

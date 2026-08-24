@@ -9,7 +9,6 @@ use App\Domains\Contacts\Http\Requests\CustomerPortal\CustomerProfileRequest;
 use App\Domains\Contacts\Http\Resources\CustomerPortal\CustomerResource;
 use App\Platform\Http\Controller;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 
 class ProfileController extends Controller
 {
@@ -20,7 +19,7 @@ class ProfileController extends Controller
 
     public function updateProfile(Company $company, CustomerProfileRequest $request)
     {
-        $customer = Auth::guard('customer')->user();
+        $customer = auth('customer')->user();
 
         $customer = $this->customerService->updateProfile(
             customer: $customer,
@@ -43,13 +42,11 @@ class ProfileController extends Controller
             );
         }
 
-        return new CustomerResource($customer);
+        return CustomerResource::make($customer);
     }
 
     public function getUser(Request $request)
     {
-        $customer = Auth::guard('customer')->user();
-
-        return new CustomerResource($customer);
+        return CustomerResource::make(auth('customer')->user());
     }
 }

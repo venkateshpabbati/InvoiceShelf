@@ -6,7 +6,8 @@ use App\Domains\Reporting\Http\Controllers\Company\SearchController;
 use App\Domains\Reporting\Http\Controllers\Company\SendCustomerStatementController;
 use Illuminate\Support\Facades\Route;
 
-Route::get('/dashboard', DashboardController::class);
+// The aggregate figures behind the admin landing page.
+Route::get('dashboard', DashboardController::class);
 Route::get('/search', SearchController::class);
 Route::get('/search/user', [SearchController::class, 'users']);
 Route::get('customers/{customer}/statement', CustomerStatementController::class);

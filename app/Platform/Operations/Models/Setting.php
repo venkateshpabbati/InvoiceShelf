@@ -6,74 +6,73 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 
+/**
+ * One row of the instance-wide configuration table.
+ *
+ * The interesting surface is static: the installer, the updater, seeders,
+ * migrations and the platform services all treat this class as "the global
+ * settings store" rather than as an entity they hydrate and pass around.
+ */
 class Setting extends Model
 {
-    protected $table = 'settings';
-
     use HasFactory;
+
+    protected $table = 'settings';
 
     protected $fillable = ['option', 'value'];
 
     /**
-     * Create or update a single application setting by key.
+     * Store one option. An option that already has a row is overwritten.
      */
     public static function setSetting(string $key, mixed $setting): void
     {
-        $old = self::whereOption($key)->first();
-
-        if ($old) {
-            $old->value = $setting;
-            $old->save();
-
-            return;
-        }
-
-        $set = new Setting;
-        $set->option = $key;
-        $set->value = $setting;
-        $set->save();
+        static::writeOption($key, $setting);
     }
 
     /**
-     * Bulk create or update application settings from a key-value array.
+     * Store a batch of options, each one following the single-key write rule.
+     *
+     * @param  array<string, mixed>  $settings
      */
     public static function setSettings(array $settings): void
     {
         foreach ($settings as $key => $value) {
-            self::updateOrCreate(
-                [
-                    'option' => $key,
-                ],
-                [
-                    'option' => $key,
-                    'value' => $value,
-                ]
-            );
+            static::writeOption($key, $value);
         }
     }
 
     /**
-     * Retrieve a single setting value by key, or null if not found.
+     * Read one option. Keys that were never stored read as null.
      */
     public static function getSetting(string $key): mixed
     {
-        $setting = static::whereOption($key)->first();
-
-        if ($setting) {
-            return $setting->value;
-        } else {
-            return null;
-        }
+        return static::query()
+            ->where('option', $key)
+            ->value('value');
     }
 
     /**
-     * Retrieve multiple settings as a key-value collection.
+     * Read several options at once, as an option => value map.
+     *
+     * Keys without a row are left out of the map entirely: callers get a
+     * shorter map, never a null placeholder.
+     *
+     * @param  array<int, string>  $settings
+     * @return Collection<string, mixed>
      */
     public static function getSettings(array $settings): Collection
     {
-        return static::whereIn('option', $settings)
-            ->get()->mapWithKeys(function ($item) {
-                return [$item['option'] => $item['value']];
-            });
+        return static::query()
+            ->whereIn('option', $settings)
+            ->pluck('value', 'option');
+    }
+
+    /**
+     * The shared write rule behind both public writers: update in place when
+     * the option is already known, insert it otherwise.
+     */
+    private static function writeOption(string $key, mixed $value): void
+    {
+        static::query()->updateOrCreate(['option' => $key], ['value' => $value]);
     }
 }

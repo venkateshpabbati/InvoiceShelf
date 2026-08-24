@@ -11,7 +11,8 @@ class OpenExchangeRateDriver extends ExchangeRateDriver
     public function getExchangeRate(string $baseCurrency, string $targetCurrency): array
     {
         $url = "{$this->baseUrl}/latest.json?app_id={$this->apiKey}&base={$baseCurrency}&symbols={$targetCurrency}";
-        $response = Http::get($url)->json();
+        $reply = Http::get($url);
+        $response = $reply->json();
 
         if (array_key_exists('error', $response)) {
             throw new ExchangeRateException($response['description'], $response['message']);
@@ -37,7 +38,8 @@ class OpenExchangeRateDriver extends ExchangeRateDriver
     public function validateConnection(): array
     {
         $url = "{$this->baseUrl}/latest.json?app_id={$this->apiKey}&base=USD&symbols=EUR";
-        $response = Http::get($url)->json();
+        $reply = Http::get($url);
+        $response = $reply->json();
 
         if (array_key_exists('error', $response)) {
             if ($response['status'] == 401) {

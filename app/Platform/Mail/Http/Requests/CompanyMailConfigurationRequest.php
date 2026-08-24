@@ -9,7 +9,7 @@ use Illuminate\Validation\Rule;
 class CompanyMailConfigurationRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * Authorization is enforced by the controller, so let the request past.
      */
     public function authorize(): bool
     {
@@ -17,7 +17,7 @@ class CompanyMailConfigurationRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * Rule set for the submitted payload, keyed off the custom-config toggle.
      */
     public function rules(): array
     {

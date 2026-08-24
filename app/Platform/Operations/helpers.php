@@ -5,41 +5,61 @@ use App\Domains\Metadata\Models\CustomField;
 use App\Domains\Money\Models\Currency;
 use App\Platform\Operations\Installation\Application\InstallationState;
 use App\Platform\Operations\Models\Setting;
+use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Response as HttpResponse;
+use Illuminate\Support\Facades\Request;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Str;
 
+/*
+|--------------------------------------------------------------------------
+| Settings
+|--------------------------------------------------------------------------
+|
+| These three run during boot — view composers, the blade shell, the PDF
+| layouts — which means they can be reached before the installer has created
+| a single table. Each therefore probes the installation first and answers
+| null rather than letting a "no such table" error escape.
+|
+*/
+
 /**
- * Get company setting
+ * Read one company-scoped setting, or null when there is no database yet.
  *
- * @return string
+ * @param  string  $key
+ * @param  mixed  $company_id
+ * @return mixed
  */
 function get_company_setting($key, $company_id)
 {
-    if (! InstallationState::isDbCreated()) {
-        return null;
-    }
-
-    return CompanySetting::getSetting($key, $company_id);
+    return InstallationState::isDbCreated()
+        ? CompanySetting::getSetting($key, $company_id)
+        : null;
 }
 
 /**
- * Get app setting
+ * Read one instance-wide setting, or null when there is no database yet.
  *
- * @param  $company_id
- * @return string
+ * @param  string  $key
+ * @return mixed
  */
 function get_app_setting($key)
 {
-    if (! InstallationState::isDbCreated()) {
-        return null;
-    }
-
-    return Setting::getSetting($key);
+    return InstallationState::isDbCreated()
+        ? Setting::getSetting($key)
+        : null;
 }
 
 /**
- * Get page title
+ * Resolve the <title> for the SPA shell.
  *
- * @return string
+ * The customer portal gets its own per-company title; everything else gets the
+ * instance-wide admin title. An empty or missing setting falls through to the
+ * product name, and an uninstalled instance has no title at all.
+ *
+ * @param  mixed  $company_id
+ * @return string|null
  */
 function get_page_title($company_id)
 {
@@ -47,104 +67,157 @@ function get_page_title($company_id)
         return null;
     }
 
-    $routeName = Route::currentRouteName();
+    $configured = Route::currentRouteName() === 'customer.dashboard'
+        ? CompanySetting::getSetting('customer_portal_page_title', $company_id)
+        : Setting::getSetting('admin_page_title');
 
-    $defaultPageTitle = 'InvoiceShelf - Self Hosted Invoicing Platform';
+    return $configured ?: 'InvoiceShelf - Self Hosted Invoicing Platform';
+}
 
-    if ($routeName === 'customer.dashboard') {
-        $pageTitle = CompanySetting::getSetting('customer_portal_page_title', $company_id);
+/*
+|--------------------------------------------------------------------------
+| Request path matching
+|--------------------------------------------------------------------------
+*/
 
-        return $pageTitle ? $pageTitle : $defaultPageTitle;
-    }
-
-    $pageTitle = Setting::getSetting('admin_page_title');
-
-    return $pageTitle ? $pageTitle : $defaultPageTitle;
+/**
+ * Does the current request path match one of the given patterns?
+ *
+ * @param  string|array  $path  One pattern, or a list of them.
+ * @return bool
+ */
+function is_url($path)
+{
+    return Request::is(...(array) $path);
 }
 
 /**
- * Set Active Path
+ * Blade sugar: emit the marker class when the current path matches.
  *
- * @param  string  $active
+ * @param  string|array  $path
+ * @param  string  $active  Returned on a match.
  * @return string
  */
 function set_active($path, $active = 'active')
 {
-    return call_user_func_array('Request::is', (array) $path) ? $active : '';
+    return is_url($path) ? $active : '';
 }
 
-/**
- * @return mixed
- */
-function is_url($path)
-{
-    return call_user_func_array('Request::is', (array) $path);
-}
+/*
+|--------------------------------------------------------------------------
+| Custom fields
+|--------------------------------------------------------------------------
+*/
 
 /**
+ * Which custom_field_values column stores an answer of this field type.
+ *
+ * Every value column is typed, so the field's declared type decides where the
+ * answer is written and read. Phone numbers are kept alongside numbers, and an
+ * unrecognised type is treated as free text so an unknown field never loses
+ * its answer.
+ *
  * @return string
  */
 function getCustomFieldValueKey(string $type)
 {
-    switch ($type) {
-        case 'Input':
-            return 'string_answer';
-
-        case 'TextArea':
-            return 'string_answer';
-
-        case 'Phone':
-            return 'number_answer';
-
-        case 'Url':
-            return 'string_answer';
-
-        case 'Number':
-            return 'number_answer';
-
-        case 'Dropdown':
-            return 'string_answer';
-
-        case 'Switch':
-            return 'boolean_answer';
-
-        case 'Date':
-            return 'date_answer';
-
-        case 'Time':
-            return 'time_answer';
-
-        case 'DateTime':
-            return 'date_time_answer';
-
-        default:
-            return 'string_answer';
-    }
+    return match ($type) {
+        'Number', 'Phone' => 'number_answer',
+        'Switch' => 'boolean_answer',
+        'Date' => 'date_answer',
+        'Time' => 'time_answer',
+        'DateTime' => 'date_time_answer',
+        // 'Input', 'TextArea', 'Url', 'Dropdown' — and anything unmapped.
+        default => 'string_answer',
+    };
 }
 
 /**
- * Format an amount given in cents as currency markup for PDF templates.
+ * Every existing slug that could collide with $slug for this model type.
  *
- * The magnitude is formatted first and a single minus sign is prefixed to the
- * whole assembled string, so a negative amount reads "-$24,738.00" rather than
- * "$-24,738.00" and the symbol stays glued to the digits in both symbol
- * positions. The symbol is wrapped in a DejaVu Sans span so it renders even
- * when the active font has no glyph for it.
+ * Prefix-matched in one query so the caller can test the base slug and all of
+ * its numbered variants without going back to the database. The field being
+ * renamed is excluded, otherwise it would collide with itself.
  *
- * @param  int|float|string|null  $money  Amount in cents.
- * @param  Currency|null  $currency  Defaults to the company currency setting.
+ * @param  string  $type  Model type the field is attached to.
+ * @param  string  $slug  Base slug to match as a prefix.
+ * @param  int  $id  Custom field to leave out of the comparison.
+ * @return Collection
+ */
+function getRelatedSlugs($type, $slug, $id = 0)
+{
+    return CustomField::query()
+        ->select('slug')
+        ->where('model_type', $type)
+        ->where('slug', 'like', $slug.'%')
+        ->where('id', '!=', $id)
+        ->get();
+}
+
+/**
+ * Build the unique storage slug for a custom field.
+ *
+ * The shape is CUSTOM_<MODEL>_<LABEL>, upper-cased with underscores. When that
+ * is taken, _1 .. _10 are tried in turn; an eleventh collision is a caller
+ * problem, not something to paper over with a random suffix.
+ *
+ * @param  string  $model  Model type the field is attached to.
+ * @param  string  $title  Human label to slugify.
+ * @param  int  $id  Custom field being renamed, if any.
+ * @return string
+ *
+ * @throws Exception When every candidate is already in use.
+ */
+function clean_slug($model, $title, $id = 0)
+{
+    $base = Str::upper('CUSTOM_'.$model.'_'.Str::slug($title, '_'));
+
+    $taken = getRelatedSlugs($model, $base, $id)->pluck('slug')->all();
+
+    $candidates = [$base, ...array_map(fn ($n) => $base.'_'.$n, range(1, 10))];
+
+    foreach ($candidates as $candidate) {
+        if (! in_array($candidate, $taken)) {
+            return $candidate;
+        }
+    }
+
+    throw new Exception('Can not create a unique slug');
+}
+
+/*
+|--------------------------------------------------------------------------
+| Output
+|--------------------------------------------------------------------------
+*/
+
+/**
+ * Render a minor-unit amount as currency markup for a PDF template.
+ *
+ * Two things set this apart from the ordinary money formatter. The symbol is
+ * wrapped in a DejaVu Sans span, because the template fonts carry no glyph for
+ * most currency symbols. And the sign is prefixed to the finished string
+ * instead of being formatted into it, so a negative amount reads "-$24,738.00"
+ * with the symbol still against the digits in either symbol position.
+ *
+ * The sign is decided on the formatted digits rather than on the input: an
+ * amount that rounds away at the currency's precision prints as zero, and
+ * "-$0.00" is not a number anyone owes.
+ *
+ * @param  int|float|string|null  $money  Amount in minor units (cents).
+ * @param  Currency|null  $currency
  * @return string
  */
 function format_money_pdf($money, $currency = null)
 {
-    $money = $money / 100;
+    $amount = $money / 100;
 
-    if (! $currency) {
-        $currency = Currency::findOrFail(CompanySetting::getSetting('currency', 1));
-    }
+    // Quirk, deliberately preserved: with no currency in hand this falls back
+    // to company 1's setting rather than to the amount's own company.
+    $currency = $currency ?: Currency::findOrFail(CompanySetting::getSetting('currency', 1));
 
-    $format_money = number_format(
-        abs($money),
+    $digits = number_format(
+        abs($amount),
         $currency->precision,
         $currency->decimal_separator,
         $currency->thousand_separator
@@ -152,59 +225,26 @@ function format_money_pdf($money, $currency = null)
 
     $symbol = '<span style="font-family: DejaVu Sans;">'.$currency->symbol.'</span>';
 
-    $currency_with_symbol = $currency->swap_currency_symbol
-        ? $format_money.$symbol
-        : $symbol.$format_money;
+    $rendered = $currency->swap_currency_symbol
+        ? $digits.$symbol
+        : $symbol.$digits;
 
-    // The sign is decided on the formatted digits, not on the raw input, so an
-    // amount that rounds away at the currency's precision (a stray cent on a
-    // zero-precision currency) renders as zero instead of "-0".
-    $is_negative = $money < 0 && preg_match('/[1-9]/', $format_money) === 1;
+    $signed = $amount < 0 && preg_match('/[1-9]/', $digits) === 1;
 
-    return $is_negative ? '-'.$currency_with_symbol : $currency_with_symbol;
+    return $signed ? '-'.$rendered : $rendered;
 }
 
 /**
- * @param  $string
- * @return string
+ * The validation-shaped rejection controllers use for domain conflicts.
+ *
+ * @param  string  $error  Machine-readable key the SPA switches on.
+ * @param  string  $message  Human-readable explanation.
+ * @return JsonResponse
  */
-function clean_slug($model, $title, $id = 0)
-{
-    // Normalize the title
-    $slug = Str::upper('CUSTOM_'.$model.'_'.Str::slug($title, '_'));
-
-    // Get any that could possibly be related.
-    // This cuts the queries down by doing it once.
-    $allSlugs = getRelatedSlugs($model, $slug, $id);
-
-    // If we haven't used it before then we are all good.
-    if (! $allSlugs->contains('slug', $slug)) {
-        return $slug;
-    }
-
-    // Just append numbers like a savage until we find not used.
-    for ($i = 1; $i <= 10; $i++) {
-        $newSlug = $slug.'_'.$i;
-        if (! $allSlugs->contains('slug', $newSlug)) {
-            return $newSlug;
-        }
-    }
-
-    throw new Exception('Can not create a unique slug');
-}
-
-function getRelatedSlugs($type, $slug, $id = 0)
-{
-    return CustomField::select('slug')->where('slug', 'like', $slug.'%')
-        ->where('model_type', $type)
-        ->where('id', '<>', $id)
-        ->get();
-}
-
 function respondJson($error, $message)
 {
     return response()->json([
         'error' => $error,
         'message' => $message,
-    ], 422);
+    ], HttpResponse::HTTP_UNPROCESSABLE_ENTITY);
 }

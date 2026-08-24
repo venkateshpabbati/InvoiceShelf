@@ -15,151 +15,186 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Silber\Bouncer\BouncerFacade;
 
+/**
+ * The company overview: a twelve-month money series, the headline counters and
+ * the two "latest activity" lists.
+ *
+ * The series is anchored on the company's `fiscal_year` preference, whose first
+ * dash-separated component names the opening month. Anything the parser cannot
+ * read — the shipped default is the word "calendar_year" — intval()s to zero,
+ * and month zero rolls Carbon back into December of the year before. That is
+ * the window those companies really get, so it is reproduced rather than
+ * corrected.
+ */
 class DashboardController extends Controller
 {
     /**
-     * Handle the incoming request.
-     *
      * @return JsonResponse
      */
     public function __invoke(Request $request)
     {
-        $company = Company::find($request->header('company'));
+        $companyId = $request->header('company');
 
-        $this->authorize('view dashboard', $company);
+        $this->authorize('view dashboard', Company::find($companyId));
 
-        $invoice_totals = [];
-        $expense_totals = [];
-        $receipt_totals = [];
-        $net_income_totals = [];
+        $openingMonth = intval(explode('-', CompanySetting::getSetting('fiscal_year', $companyId))[0]);
 
-        $i = 0;
+        // Three cursors over the same starting instant: the fixed left edge of
+        // the whole window, and the pair that walks it a month at a time.
+        $windowStart = Carbon::now();
+        $monthStart = Carbon::now();
+        $monthEnd = Carbon::now();
+
+        // A fiscal year whose opening month is still ahead in the calendar year
+        // is the one that opened twelve months ago.
+        $openedLastYear = $openingMonth > $monthStart->month;
+
+        foreach ([$windowStart, $monthStart, $monthEnd] as $cursor) {
+            if ($openedLastYear) {
+                $cursor->subYear();
+            }
+
+            $cursor->month($openingMonth);
+        }
+
+        $windowStart->startOfMonth();
+        $monthStart->startOfMonth();
+        $monthEnd->endOfMonth();
+
+        // The key's presence is the whole signal — its value is never read.
+        $previousYear = $request->has('previous_year');
+
+        if ($previousYear) {
+            $windowStart->subYear()->startOfMonth();
+            $monthStart->subYear()->startOfMonth();
+            $monthEnd->subYear()->endOfMonth();
+        }
+
         $months = [];
-        $monthCounter = 0;
-        $fiscalYear = CompanySetting::getSetting('fiscal_year', $request->header('company'));
-        $startDate = Carbon::now();
-        $start = Carbon::now();
-        $end = Carbon::now();
-        $terms = explode('-', $fiscalYear);
-        $companyStartMonth = intval($terms[0]);
+        $invoiceTotals = [];
+        $expenseTotals = [];
+        $receiptTotals = [];
+        $netIncomeTotals = [];
 
-        if ($companyStartMonth <= $start->month) {
-            $startDate->month($companyStartMonth)->startOfMonth();
-            $start->month($companyStartMonth)->startOfMonth();
-            $end->month($companyStartMonth)->endOfMonth();
-        } else {
-            $startDate->subYear()->month($companyStartMonth)->startOfMonth();
-            $start->subYear()->month($companyStartMonth)->startOfMonth();
-            $end->subYear()->month($companyStartMonth)->endOfMonth();
-        }
+        for ($bucket = 0; $bucket < 12; $bucket++) {
+            $bucketSpan = [$monthStart->format('Y-m-d'), $monthEnd->format('Y-m-d')];
 
-        if ($request->has('previous_year')) {
-            $startDate->subYear()->startOfMonth();
-            $start->subYear()->startOfMonth();
-            $end->subYear()->endOfMonth();
-        }
-
-        while ($monthCounter < 12) {
-            $invoice_totals[] = Invoice::whereBetween(
-                'invoice_date',
-                [$start->format('Y-m-d'), $end->format('Y-m-d')]
-            )
+            $invoiceTotals[] = Invoice::query()
+                ->whereBetween('invoice_date', $bucketSpan)
                 ->whereCompany()
                 ->sum('base_total');
-            $expense_totals[] = Expense::whereBetween(
-                'expense_date',
-                [$start->format('Y-m-d'), $end->format('Y-m-d')]
-            )
+
+            $expenseTotals[] = Expense::query()
+                ->whereBetween('expense_date', $bucketSpan)
                 ->whereCompany()
                 ->sum('base_amount');
-            $receipt_totals[] = Payment::whereBetween(
-                'payment_date',
-                [$start->format('Y-m-d'), $end->format('Y-m-d')]
-            )
+
+            $receiptTotals[] = Payment::query()
+                ->whereBetween('payment_date', $bucketSpan)
                 ->whereCompany()
                 ->sum('base_amount');
-            $net_income_totals[] = ($receipt_totals[$i] - $expense_totals[$i]);
-            $i++;
-            $months[] = $start->translatedFormat('M');
-            $monthCounter++;
-            $end->startOfMonth();
-            $start->addMonth()->startOfMonth();
-            $end->addMonth()->endOfMonth();
+
+            // Net income is what came in less what went out. Invoiced money is
+            // not part of it — only money actually received counts.
+            $netIncomeTotals[] = $receiptTotals[$bucket] - $expenseTotals[$bucket];
+
+            $months[] = $monthStart->translatedFormat('M');
+
+            // Both cursors step forward off the first of their month, so a
+            // short month can never drag the walk backwards.
+            $monthEnd->startOfMonth()->addMonth()->endOfMonth();
+            $monthStart->addMonth()->startOfMonth();
         }
 
-        $start->subMonth()->endOfMonth();
+        // Twelve steps left the walking cursor on the month after the window.
+        // Back it up on to the last month and take that month's final day as
+        // the right edge of the whole-window figures.
+        $monthStart->subMonth()->endOfMonth();
 
-        $total_sales = Invoice::whereBetween(
-            'invoice_date',
-            [$startDate->format('Y-m-d'), $start->format('Y-m-d')]
-        )
+        $windowSpan = [$windowStart->format('Y-m-d'), $monthStart->format('Y-m-d')];
+
+        $totalSales = Invoice::query()
+            ->whereBetween('invoice_date', $windowSpan)
             ->whereCompany()
             ->sum('base_total');
 
-        $total_receipts = Payment::whereBetween(
-            'payment_date',
-            [$startDate->format('Y-m-d'), $start->format('Y-m-d')]
-        )
+        $totalReceipts = Payment::query()
+            ->whereBetween('payment_date', $windowSpan)
             ->whereCompany()
             ->sum('base_amount');
 
-        $total_expenses = Expense::whereBetween(
-            'expense_date',
-            [$startDate->format('Y-m-d'), $start->format('Y-m-d')]
-        )
+        $totalExpenses = Expense::query()
+            ->whereBetween('expense_date', $windowSpan)
             ->whereCompany()
             ->sum('base_amount');
 
-        $total_net_income = (int) $total_receipts - (int) $total_expenses;
+        $totalNetIncome = (int) $totalReceipts - (int) $totalExpenses;
 
-        $chart_data = [
+        $chartData = [
             'months' => $months,
-            'invoice_totals' => $invoice_totals,
-            'expense_totals' => $expense_totals,
-            'receipt_totals' => $receipt_totals,
-            'net_income_totals' => $net_income_totals,
+            'invoice_totals' => $invoiceTotals,
+            'expense_totals' => $expenseTotals,
+            'receipt_totals' => $receiptTotals,
+            'net_income_totals' => $netIncomeTotals,
         ];
 
-        $total_customer_count = Customer::whereCompany()->count();
+        $customerCount = Customer::query()->whereCompany()->count();
+
         // "How many invoices did we issue" counts issued documents, so the
-        // reversals are excluded. The sums above deliberately keep them: a
-        // credit note's negated total is exactly what nets sales back out.
-        $total_invoice_count = Invoice::whereCompany()
+        // reversals are left out. The money figures above deliberately keep
+        // them: a credit note's negated total is exactly what nets a sale back
+        // out. The outstanding sum below keeps them too, which is a quirk
+        // rather than a decision — a credit note's due amount is always zero,
+        // so it adds nothing, and the sum has always been taken over the lot.
+        $invoiceCount = Invoice::query()
+            ->whereCompany()
             ->where('type', Invoice::TYPE_INVOICE)
             ->count();
-        $total_estimate_count = Estimate::whereCompany()->count();
-        $total_amount_due = Invoice::whereCompany()
+
+        $estimateCount = Estimate::query()->whereCompany()->count();
+
+        $amountDue = Invoice::query()
+            ->whereCompany()
             ->sum('base_due_amount');
 
-        // Raw models, not InvoiceResource: every loaded relation is serialized
-        // with the full $appends set, so a column-limited creditNotes load blew
-        // up in the date accessors (no company_id on the children) and a full
-        // load would run the appends per credit note for nothing. The rows do
-        // not need the relation: credited_status is a resource-level field, and
-        // a fully credited invoice has no due amount so it never appears here.
-        $recent_due_invoices = Invoice::with('customer')
-            ->whereCompany()
-            ->where('base_due_amount', '>', 0)
+        // Raw models rather than InvoiceResource: each loaded relation is
+        // serialized with the full $appends set, so a column-limited
+        // creditNotes load blew up inside the date accessors (the children
+        // arrive without company_id) and loading them whole would run those
+        // appends per credit note for nothing. Neither list needs the relation
+        // anyway — credited_status is a resource-level field, and a fully
+        // credited invoice has no due amount left, so it never reaches here.
+        $recentDueInvoices = Invoice::with('customer')
+            ->whereCompany()->where('base_due_amount', '>', 0)
             ->take(5)
             ->latest()
             ->get();
-        $recent_estimates = Estimate::with('customer')->whereCompany()->take(5)->latest()->get();
 
+        $recentEstimates = Estimate::with('customer')
+            ->whereCompany()
+            ->take(5)
+            ->latest()
+            ->get();
+
+        // Both lists are gated on the viewer's own document rights and come
+        // back empty — never absent — when those are missing. The counters and
+        // the money figures are not gated at all: holding the dashboard
+        // ability is enough to see company revenue.
         return response()->json([
-            'total_amount_due' => $total_amount_due,
-            'total_customer_count' => $total_customer_count,
-            'total_invoice_count' => $total_invoice_count,
-            'total_estimate_count' => $total_estimate_count,
+            'total_amount_due' => $amountDue,
+            'total_customer_count' => $customerCount,
+            'total_invoice_count' => $invoiceCount,
+            'total_estimate_count' => $estimateCount,
 
-            'recent_due_invoices' => BouncerFacade::can('view-invoice', Invoice::class) ? $recent_due_invoices : [],
-            'recent_estimates' => BouncerFacade::can('view-estimate', Estimate::class) ? $recent_estimates : [],
+            'recent_due_invoices' => BouncerFacade::can('view-invoice', Invoice::class) ? $recentDueInvoices : [],
+            'recent_estimates' => BouncerFacade::can('view-estimate', Estimate::class) ? $recentEstimates : [],
 
-            'chart_data' => $chart_data,
+            'chart_data' => $chartData,
 
-            'total_sales' => $total_sales,
-            'total_receipts' => $total_receipts,
-            'total_expenses' => $total_expenses,
-            'total_net_income' => $total_net_income,
+            'total_sales' => $totalSales,
+            'total_receipts' => $totalReceipts,
+            'total_expenses' => $totalExpenses,
+            'total_net_income' => $totalNetIncome,
         ]);
     }
 }

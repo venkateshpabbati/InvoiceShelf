@@ -8,105 +8,82 @@ use App\Domains\Receivables\Models\PaymentMethod;
 use Illuminate\Auth\Access\HandlesAuthorization;
 use Silber\Bouncer\BouncerFacade;
 
+/**
+ * Who may work with payment methods.
+ *
+ * Two things about this table are worth stating plainly, because neither
+ * follows the shape the other policies in the domain use.
+ *
+ * First, there is no ability of its own. Every decision -- reading the list,
+ * adding a method, renaming one, removing one -- is checked against the
+ * ability to *view* payments. Anyone who can see the payments of a company can
+ * therefore also reshape that company's set of payment methods; there is no
+ * separate create or edit gate to hold them back. This is the established
+ * behaviour and is kept as-is.
+ *
+ * Second, the payment method is not what Bouncer is asked about: the check
+ * names the payment class instead, so the ability is only ever evaluated at
+ * class level even when a specific row is in hand. What ties a decision to a
+ * row is the second half -- membership of the company the method belongs to --
+ * which every row-aimed method applies. Creating is the exception, having no
+ * row to belong anywhere; a member of any company may create.
+ *
+ * Bouncer answers for the user it currently has scoped, not for the $user
+ * handed in; that argument only feeds the membership half.
+ */
 class PaymentMethodPolicy
 {
     use HandlesAuthorization;
 
-    /**
-     * Determine whether the user can view any models.
-     *
-     * @return mixed
-     */
     public function viewAny(User $user): bool
     {
-        if (BouncerFacade::can('view-payment', Payment::class)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayReadPayments();
     }
 
-    /**
-     * Determine whether the user can view the model.
-     *
-     * @return mixed
-     */
     public function view(User $user, PaymentMethod $paymentMethod): bool
     {
-        if (BouncerFacade::can('view-payment', Payment::class) && $user->hasCompany($paymentMethod->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayReadPayments() && $this->sameCompany($user, $paymentMethod);
     }
 
-    /**
-     * Determine whether the user can create models.
-     *
-     * @return mixed
-     */
     public function create(User $user): bool
     {
-        if (BouncerFacade::can('view-payment', Payment::class)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayReadPayments();
     }
 
-    /**
-     * Determine whether the user can update the model.
-     *
-     * @return mixed
-     */
     public function update(User $user, PaymentMethod $paymentMethod): bool
     {
-        if (BouncerFacade::can('view-payment', Payment::class) && $user->hasCompany($paymentMethod->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayReadPayments() && $this->sameCompany($user, $paymentMethod);
     }
 
-    /**
-     * Determine whether the user can delete the model.
-     *
-     * @return mixed
-     */
     public function delete(User $user, PaymentMethod $paymentMethod): bool
     {
-        if (BouncerFacade::can('view-payment', Payment::class) && $user->hasCompany($paymentMethod->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayReadPayments() && $this->sameCompany($user, $paymentMethod);
     }
 
     /**
-     * Determine whether the user can restore the model.
-     *
-     * @return mixed
+     * Restoring and erasing are governed the same way; payment methods are not
+     * soft-deleted, so neither is reachable in practice.
      */
     public function restore(User $user, PaymentMethod $paymentMethod): bool
     {
-        if (BouncerFacade::can('view-payment', Payment::class) && $user->hasCompany($paymentMethod->company_id)) {
-            return true;
-        }
+        return $this->mayReadPayments() && $this->sameCompany($user, $paymentMethod);
+    }
 
-        return false;
+    public function forceDelete(User $user, PaymentMethod $paymentMethod): bool
+    {
+        return $this->mayReadPayments() && $this->sameCompany($user, $paymentMethod);
     }
 
     /**
-     * Determine whether the user can permanently delete the model.
-     *
-     * @return mixed
+     * The single ability behind every decision on this table.
      */
-    public function forceDelete(User $user, PaymentMethod $paymentMethod): bool
+    private function mayReadPayments(): bool
     {
-        if (BouncerFacade::can('view-payment', Payment::class) && $user->hasCompany($paymentMethod->company_id)) {
-            return true;
-        }
+        return BouncerFacade::can('view-payment', Payment::class);
+    }
 
-        return false;
+    private function sameCompany(User $user, PaymentMethod $paymentMethod): bool
+    {
+        return $user->hasCompany($paymentMethod->company_id);
     }
 }

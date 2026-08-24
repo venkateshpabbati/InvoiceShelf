@@ -4,10 +4,14 @@ namespace App\Domains\Sales\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
 
+/**
+ * The envelope of an estimate mail: who it goes to, what it says, and the
+ * optional carbon copies.
+ */
 class SendEstimatesRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * The send ability is checked in the controller.
      */
     public function authorize(): bool
     {
@@ -15,29 +19,17 @@ class SendEstimatesRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * @return array<string, mixed>
      */
     public function rules(): array
     {
         return [
-            'subject' => [
-                'required',
-            ],
-            'body' => [
-                'required',
-            ],
-            'from' => [
-                'required',
-            ],
-            'to' => [
-                'required',
-            ],
-            'cc' => [
-                'nullable',
-            ],
-            'bcc' => [
-                'nullable',
-            ],
+            'subject' => 'required',
+            'body' => 'required',
+            'from' => 'required',
+            'to' => 'required',
+            'cc' => 'nullable',
+            'bcc' => 'nullable',
         ];
     }
 }

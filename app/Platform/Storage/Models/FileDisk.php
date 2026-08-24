@@ -9,25 +9,24 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 
+/**
+ * A named storage target: a driver plus the credential blob that configures it.
+ */
 class FileDisk extends Model
 {
-    protected $table = 'file_disks';
-
     use HasFactory;
 
     public const DISK_TYPE_SYSTEM = 'SYSTEM';
 
     public const DISK_TYPE_REMOTE = 'REMOTE';
 
-    protected $guarded = [
-        'id',
-    ];
+    protected $table = 'file_disks';
+
+    protected $guarded = ['id'];
 
     protected function casts(): array
     {
-        return [
-            'set_as_default' => 'boolean',
-        ];
+        return ['set_as_default' => 'boolean'];
     }
 
     public function setCredentialsAttribute(mixed $value): void
@@ -36,18 +35,20 @@ class FileDisk extends Model
     }
 
     /**
-     * Decode credentials, handling double-encoded JSON from legacy data.
+     * Read the credential blob back as a collection.
+     *
+     * Rows written by older releases hold a JSON string *inside* the JSON
+     * column, so a first decode that yields a string is decoded once more.
      */
     public function getDecodedCredentials(): Collection
     {
-        $decoded = json_decode($this->credentials, true);
+        $payload = json_decode($this->credentials, true);
 
-        // Handle double-encoded JSON (string inside string)
-        if (is_string($decoded)) {
-            $decoded = json_decode($decoded, true);
+        if (is_string($payload)) {
+            $payload = json_decode($payload, true);
         }
 
-        return collect($decoded ?? []);
+        return collect($payload ?? []);
     }
 
     public function scopeWhereOrder($query, $orderByField, $orderBy)
@@ -57,63 +58,66 @@ class FileDisk extends Model
 
     public function scopeFileDisksBetween($query, $start, $end)
     {
-        return $query->whereBetween(
-            'file_disks.created_at',
-            [$start->format('Y-m-d'), $end->format('Y-m-d')]
-        );
+        return $query->whereBetween('file_disks.created_at', [
+            $start->format('Y-m-d'),
+            $end->format('Y-m-d'),
+        ]);
     }
 
     public function scopeWhereSearch($query, $search)
     {
-        foreach (explode(' ', $search) as $term) {
-            $query->where('name', 'LIKE', '%'.$term.'%')
-                ->orWhere('driver', 'LIKE', '%'.$term.'%');
+        foreach (explode(' ', $search) as $keyword) {
+            $like = '%'.$keyword.'%';
+
+            $query->where('name', 'LIKE', $like)->orWhere('driver', 'LIKE', $like);
         }
     }
 
     public function scopePaginateData($query, $limit)
     {
-        if ($limit == 'all') {
-            return $query->get();
-        }
-
-        return $query->paginate($limit);
+        return $limit == 'all'
+            ? $query->get()
+            : $query->paginate($limit);
     }
 
     public function scopeApplyFilters($query, array $filters)
     {
-        $filters = collect($filters);
-        if ($filters->get('search')) {
-            $query->whereSearch($filters->get('search'));
+        $criteria = collect($filters);
+
+        if ($criteria->get('search')) {
+            $query->whereSearch($criteria->get('search'));
         }
 
-        if ($filters->get('from_date') && $filters->get('to_date')) {
-            $start = Carbon::createFromFormat('Y-m-d', $filters->get('from_date'));
-            $end = Carbon::createFromFormat('Y-m-d', $filters->get('to_date'));
-            $query->fileDisksBetween($start, $end);
+        if ($criteria->get('from_date') && $criteria->get('to_date')) {
+            $query->fileDisksBetween(
+                Carbon::createFromFormat('Y-m-d', $criteria->get('from_date')),
+                Carbon::createFromFormat('Y-m-d', $criteria->get('to_date'))
+            );
         }
 
-        if ($filters->get('orderByField') || $filters->get('orderBy')) {
-            $field = $filters->get('orderByField') ? $filters->get('orderByField') : 'sequence_number';
-            $orderBy = $filters->get('orderBy') ? $filters->get('orderBy') : 'asc';
-            $query->whereOrder($field, $orderBy);
+        if ($criteria->get('orderByField') || $criteria->get('orderBy')) {
+            $query->whereOrder(
+                $criteria->get('orderByField') ?: 'sequence_number',
+                $criteria->get('orderBy') ?: 'asc'
+            );
         }
     }
 
     /**
-     * Apply this disk's credentials to the filesystem configuration at runtime.
+     * Register this disk and point the runtime filesystem default at it.
      *
-     * @deprecated Use FileDiskService::registerDisk() instead — setConfig() mutates filesystems.default.
+     * @deprecated Reach for FileDiskService::registerDisk(); this variant also
+     * rewrites filesystems.default, which leaks into unrelated storage calls.
      */
     public function setConfig(): void
     {
-        $service = app(FileDiskService::class);
-        $diskName = $service->registerDisk($this);
-        config(['filesystems.default' => $diskName]);
+        $registered = app(FileDiskService::class)->registerDisk($this);
+
+        config(['filesystems.default' => $registered]);
     }
 
     /**
-     * Determine whether this disk is configured as the default storage disk.
+     * Whether this row is flagged as the installation-wide default disk.
      */
     public function setAsDefault(): bool
     {
@@ -121,38 +125,44 @@ class FileDisk extends Model
     }
 
     /**
-     * Register a dynamic filesystem disk in the runtime configuration using the given credentials.
+     * Publish a throwaway disk built from the driver's base config overlaid
+     * with the supplied credentials, and select it as the runtime default.
      *
-     * @deprecated Use FileDisk::find($id)->registerDisk() instead.
+     * @deprecated Register a persisted row through FileDiskService instead.
      */
     public static function setFilesystem(Collection $credentials, string $driver): void
     {
-        $prefix = env('DYNAMIC_DISK_PREFIX', 'temp_');
+        $target = env('DYNAMIC_DISK_PREFIX', 'temp_').$driver;
 
-        config(['filesystems.default' => $prefix.$driver]);
+        config(['filesystems.default' => $target]);
 
-        $disks = config('filesystems.disks.'.$driver);
+        $settings = config('filesystems.disks.'.$driver);
 
-        foreach ($disks as $key => $value) {
-            if ($credentials->has($key)) {
-                $disks[$key] = $credentials[$key];
+        foreach ($settings as $field => $current) {
+            if ($credentials->has($field)) {
+                $settings[$field] = $credentials[$field];
             }
         }
 
-        if ($driver === 'local' && isset($disks['root']) && ! str_starts_with($disks['root'], '/')) {
-            $disks['root'] = storage_path('app/'.$disks['root']);
+        if ($driver === 'local' && isset($settings['root']) && ! str_starts_with($settings['root'], '/')) {
+            $settings['root'] = storage_path('app/'.$settings['root']);
         }
 
-        config(['filesystems.disks.'.$prefix.$driver => $disks]);
+        config(['filesystems.disks.'.$target => $settings]);
     }
 
     public function isSystem(): bool
     {
-        return $this->type === self::DISK_TYPE_SYSTEM;
+        return $this->hasType(self::DISK_TYPE_SYSTEM);
     }
 
     public function isRemote(): bool
     {
-        return $this->type === self::DISK_TYPE_REMOTE;
+        return $this->hasType(self::DISK_TYPE_REMOTE);
+    }
+
+    private function hasType(string $expected): bool
+    {
+        return $this->type === $expected;
     }
 }

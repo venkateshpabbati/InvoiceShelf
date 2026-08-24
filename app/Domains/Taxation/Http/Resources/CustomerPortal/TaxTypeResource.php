@@ -6,6 +6,11 @@ use App\Domains\Accounts\Http\Resources\CustomerPortal\CompanyResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
+/**
+ * Tax type as the customer portal sees it: enough to label a tax line, without
+ * the bookkeeping detail. Deliberately narrower than the admin payload -- the
+ * calculation type, the fixed amount and the row kind are all withheld.
+ */
 class TaxTypeResource extends JsonResource
 {
     /**
@@ -24,9 +29,10 @@ class TaxTypeResource extends JsonResource
             'collective_tax' => $this->collective_tax,
             'description' => $this->description,
             'company_id' => $this->company_id,
-            'company' => $this->when($this->company()->exists(), function () {
-                return new CompanyResource($this->company);
-            }),
+            'company' => $this->when(
+                $this->company()->exists(),
+                fn () => new CompanyResource($this->company)
+            ),
         ];
     }
 }

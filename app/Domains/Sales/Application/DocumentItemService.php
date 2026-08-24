@@ -79,9 +79,11 @@ class DocumentItemService
                     }
 
                     if (gettype($tax['amount']) !== 'NULL') {
-                        if (array_key_exists('recurring_invoice_id', $tax)) {
-                            unset($tax['recurring_invoice_id']);
-                        }
+                        // A row lifted off a recurring template still carries
+                        // the template's key, which means nothing on the
+                        // generated document. Dropping an absent key is a
+                        // no-op, so it needs no guard.
+                        unset($tax['recurring_invoice_id']);
 
                         $createdItem->taxes()->create($tax);
                     }
@@ -114,9 +116,8 @@ class DocumentItemService
             }
 
             if (gettype($tax['amount']) !== 'NULL') {
-                if (array_key_exists('recurring_invoice_id', $tax)) {
-                    unset($tax['recurring_invoice_id']);
-                }
+                // Same template key as in createItems(), dropped the same way.
+                unset($tax['recurring_invoice_id']);
 
                 $document->taxes()->create($tax);
             }

@@ -7,133 +7,91 @@ use App\Domains\Receivables\Models\Payment;
 use Illuminate\Auth\Access\HandlesAuthorization;
 use Silber\Bouncer\BouncerFacade;
 
+/**
+ * Who may work with payments.
+ *
+ * Every decision has two halves: the Bouncer ability, and -- for anything
+ * aimed at an existing row -- membership of the company that row belongs to,
+ * so an ability held in one company never reaches another company's data.
+ *
+ * Bouncer answers for the user it currently has scoped, not for the $user
+ * handed in; that argument only feeds the membership half.
+ *
+ * Four distinct abilities govern the payment: viewing, creating, editing and
+ * deleting, plus a fifth for mailing the receipt out. Restoring and erasing
+ * ride on the delete ability. The bulk delete is checked against the class
+ * rather than a row, since it is granted before the ids are known.
+ */
 class PaymentPolicy
 {
     use HandlesAuthorization;
 
-    /**
-     * Determine whether the user can view any models.
-     *
-     * @return mixed
-     */
     public function viewAny(User $user): bool
     {
-        if (BouncerFacade::can('view-payment', Payment::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-payment', Payment::class);
     }
 
-    /**
-     * Determine whether the user can view the model.
-     *
-     * @return mixed
-     */
     public function view(User $user, Payment $payment): bool
     {
-        if (BouncerFacade::can('view-payment', $payment) && $user->hasCompany($payment->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-payment', $payment) && $this->sameCompany($user, $payment);
     }
 
-    /**
-     * Determine whether the user can create models.
-     *
-     * @return mixed
-     */
     public function create(User $user): bool
     {
-        if (BouncerFacade::can('create-payment', Payment::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('create-payment', Payment::class);
     }
 
-    /**
-     * Determine whether the user can update the model.
-     *
-     * @return mixed
-     */
     public function update(User $user, Payment $payment): bool
     {
-        if (BouncerFacade::can('edit-payment', $payment) && $user->hasCompany($payment->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('edit-payment', $payment) && $this->sameCompany($user, $payment);
     }
 
-    /**
-     * Determine whether the user can delete the model.
-     *
-     * @return mixed
-     */
     public function delete(User $user, Payment $payment): bool
     {
-        if (BouncerFacade::can('delete-payment', $payment) && $user->hasCompany($payment->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $payment);
     }
 
     /**
-     * Determine whether the user can restore the model.
-     *
-     * @return mixed
+     * Restoring and erasing are governed by the delete ability as well;
+     * payments are not soft-deleted, so neither is reachable in practice.
      */
     public function restore(User $user, Payment $payment): bool
     {
-        if (BouncerFacade::can('delete-payment', $payment) && $user->hasCompany($payment->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $payment);
     }
 
-    /**
-     * Determine whether the user can permanently delete the model.
-     *
-     * @return mixed
-     */
     public function forceDelete(User $user, Payment $payment): bool
     {
-        if (BouncerFacade::can('delete-payment', $payment) && $user->hasCompany($payment->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $payment);
     }
 
     /**
-     * Determine whether the user can send email of the model.
-     *
-     * @return mixed
+     * Mailing the receipt to the customer.
      */
     public function send(User $user, Payment $payment)
     {
-        if (BouncerFacade::can('send-payment', $payment) && $user->hasCompany($payment->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('send-payment', $payment) && $this->sameCompany($user, $payment);
     }
 
     /**
-     * Determine whether the user can delete models.
+     * Deleting a batch of payments in one request.
      *
-     * @return mixed
+     * Only the ability is asked for here: the rows arrive as a list of ids in
+     * the request body, so there is nothing yet to check company membership
+     * against.
      */
     public function deleteMultiple(User $user)
     {
-        if (BouncerFacade::can('delete-payment', Payment::class)) {
-            return true;
-        }
+        return BouncerFacade::can('delete-payment', Payment::class);
+    }
 
-        return false;
+    private function mayRemove(User $user, Payment $payment): bool
+    {
+        return BouncerFacade::can('delete-payment', $payment) && $this->sameCompany($user, $payment);
+    }
+
+    private function sameCompany(User $user, Payment $payment): bool
+    {
+        return $user->hasCompany($payment->company_id);
     }
 }

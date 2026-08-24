@@ -10,9 +10,9 @@ use Laravel\Sanctum\Sanctum;
 use function Pest\Laravel\deleteJson;
 use function Pest\Laravel\postJson;
 
-beforeEach(function () {
-    Artisan::call('db:seed', ['--class' => 'DatabaseSeeder', '--force' => true]);
-    Artisan::call('db:seed', ['--class' => 'DemoSeeder', '--force' => true]);
+beforeEach(function (): void {
+    Artisan::call('db:seed', ['--force' => true, '--class' => 'DatabaseSeeder']);
+    Artisan::call('db:seed', ['--force' => true, '--class' => 'DemoSeeder']);
     Sanctum::actingAs(User::findOrFail(1), ['*']);
     config()->set('invoiceshelf.base_url', 'https://marketplace.test');
 });

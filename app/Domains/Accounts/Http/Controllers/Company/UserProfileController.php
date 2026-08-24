@@ -25,18 +25,27 @@ class UserProfileController extends Controller
 
     public function update(ProfileRequest $request)
     {
-        $user = $request->user();
+        $account = $request->user();
 
-        $user->update($request->validated());
+        $account->update($request->validated());
 
-        return new UserResource($user);
+        return new UserResource($account);
     }
 
+    /**
+     * Attach, swap or drop the caller's profile picture.
+     *
+     * Three things can arrive on one call and each is handled in turn, so a
+     * payload carrying both a removal flag and a picture ends up with the
+     * picture, and a payload carrying both transports ends up with whatever
+     * came in as base64. Only the two picture branches check that somebody is
+     * actually signed in; the removal branch does not. Kept as it stands.
+     */
     public function uploadAvatar(AvatarRequest $request)
     {
-        $user = auth()->user();
+        $user = $request->user();
 
-        if (isset($request->is_admin_avatar_removed) && (bool) $request->is_admin_avatar_removed) {
+        if ($request->is_admin_avatar_removed ?? false) {
             $this->userAvatarManager->clear($user);
         }
         if ($user && $request->hasFile('admin_avatar')) {
@@ -48,8 +57,9 @@ class UserProfileController extends Controller
             );
         }
 
-        if ($user && $request->has('avatar')) {
-            $data = json_decode($request->avatar);
+        if ($user !== null && $request->has('avatar')) {
+            $encoded = $request->avatar;
+            $data = json_decode($encoded);
             $this->userAvatarManager->replaceBase64($user, $data->data, $data->name);
         }
 
@@ -65,12 +75,8 @@ class UserProfileController extends Controller
 
     public function updateSettings(UpdateSettingsRequest $request): JsonResponse
     {
-        $user = $request->user();
+        $request->user()->setSettings($request->settings);
 
-        $user->setSettings($request->settings);
-
-        return response()->json([
-            'success' => true,
-        ]);
+        return response()->json(['success' => true]);
     }
 }

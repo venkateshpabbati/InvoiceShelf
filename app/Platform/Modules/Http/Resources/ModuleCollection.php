@@ -9,13 +9,15 @@ use Illuminate\Http\Resources\Json\ResourceCollection;
 class ModuleCollection extends ResourceCollection
 {
     /**
-     * Transform the resource collection into an array.
+     * Hand back the default mapping over the wrapped module resources.
      *
      * @param  Request  $request
      * @return array|Arrayable|\JsonSerializable
      */
     public function toArray($request): array
     {
-        return parent::toArray($request);
+        $modules = parent::toArray($request);
+
+        return $modules;
     }
 }

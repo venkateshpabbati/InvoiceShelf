@@ -9,12 +9,21 @@ use App\Support\DocumentTotals;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Validator;
 
+/**
+ * Vets a standing order and reshapes it into the row the service stores.
+ *
+ * A schedule carries a whole invoice in template form, so what arrives is a
+ * document's payload with three extra fields bolted on: the cron expression
+ * that decides when it fires, the date it starts running, and the limit that
+ * eventually retires it. Everything else — items, discounts, taxes — is
+ * checked and recomputed exactly as it is on a real invoice.
+ */
 class RecurringInvoiceRequest extends FormRequest
 {
     use Concerns\ValidatesDocumentTaxPlaceholders;
 
     /**
-     * Determine if the user is authorized to make this request.
+     * Every caller is let through; the controller holds the gate.
      */
     public function authorize(): bool
     {
@@ -22,11 +31,17 @@ class RecurringInvoiceRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * Rules for the schedule and for the invoice template it carries.
+     *
+     * The cron expression, the start date and the status are checked for
+     * presence only: a string the cron parser cannot read gets no validation
+     * message and instead surfaces as an error when the first firing is worked
+     * out. The limit fields answer to the chosen limit mode — a count is
+     * demanded for COUNT, an end date for DATE, and neither for NONE.
      */
     public function rules(): array
     {
-        $companyCurrency = CompanySetting::getSetting('currency', $this->header('company'));
+        $homeCurrency = CompanySetting::getSetting('currency', $this->header('company'));
 
         $rules = [
             'starts_at' => [
@@ -65,9 +80,6 @@ class RecurringInvoiceRequest extends FormRequest
             'status' => [
                 'required',
             ],
-            'exchange_rate' => [
-                'nullable',
-            ],
             'frequency' => [
                 'required',
             ],
@@ -91,63 +103,79 @@ class RecurringInvoiceRequest extends FormRequest
             ],
         ];
 
-        $customer = Customer::find($this->customer_id);
+        // A contact billed in some other currency than the company's turns the
+        // otherwise optional rate into a hard requirement. The contact is
+        // looked up by bare id, so one belonging to another company answers
+        // here just the same.
+        $contact = Customer::find($this->customer_id);
 
-        if ($customer && $companyCurrency) {
-            if ((string) $customer->currency_id !== $companyCurrency) {
-                $rules['exchange_rate'] = [
-                    'required',
-                ];
-            }
+        if ($contact && $homeCurrency && (string) $contact->currency_id !== $homeCurrency) {
+            $rules['exchange_rate'] = [
+                'required',
+            ];
         }
 
         return $rules;
     }
 
+    /**
+     * Reject any per-item tax row that carries an amount without a type.
+     */
     public function withValidator(Validator $validator): void
     {
         $this->validateDocumentTaxPlaceholders($validator);
     }
 
+    /**
+     * Fold the submission into the columns of the schedule row.
+     *
+     * The submitted sub-total, tax and grand total are thrown away and worked
+     * out again from the line items, because every invoice this schedule mints
+     * inherits them. The stored currency is always the contact's; the
+     * submitted currency id only decides whether an exchange rate is carried
+     * or pinned at one.
+     */
     public function getRecurringInvoicePayload()
     {
-        $company_currency = CompanySetting::getSetting('currency', $this->header('company'));
-        $current_currency = $this->currency_id;
-        $exchange_rate = $company_currency != $current_currency ? $this->exchange_rate : 1;
-        $currency = Customer::find($this->customer_id)->currency_id;
+        $company = $this->header('company');
 
-        $nextInvoiceAt = RecurringInvoice::getNextInvoiceDate($this->frequency, $this->starts_at);
+        $companyCurrency = CompanySetting::getSetting('currency', $company);
+        $submittedCurrency = $this->currency_id;
+        $rate = $companyCurrency != $submittedCurrency ? $this->exchange_rate : 1;
+        $contactCurrency = Customer::find($this->customer_id)->currency_id;
 
-        $tax_per_item = CompanySetting::getSetting('tax_per_item', $this->header('company')) ?? 'NO ';
-        $discount_per_item = CompanySetting::getSetting('discount_per_item', $this->header('company')) ?? 'NO';
+        $nextRun = RecurringInvoice::getNextInvoiceDate($this->frequency, $this->starts_at);
 
-        // Recompute totals server-side from the line items (GHSA-8c69). The
-        // recurring template totals propagate to every generated invoice.
+        $perItemTax = CompanySetting::getSetting('tax_per_item', $company) ?? 'NO ';
+        $perItemDiscount = CompanySetting::getSetting('discount_per_item', $company) ?? 'NO';
+
         $totals = DocumentTotals::compute(
             $this->items ?? [],
             $this->taxes ?? [],
             $this->discount_val,
-            $tax_per_item,
+            $perItemTax,
             (bool) $this->tax_included,
-            $discount_per_item
+            $perItemDiscount
         );
 
-        return collect($this->except('items', 'taxes'))
+        $submitted = collect($this->except('items', 'taxes'));
+
+        return $submitted
             ->merge([
                 'creator_id' => $this->user()->id,
-                'company_id' => $this->header('company'),
-                'next_invoice_at' => $nextInvoiceAt,
-                'tax_per_item' => $tax_per_item,
-                'discount_per_item' => $discount_per_item,
+                'company_id' => $company,
+                'next_invoice_at' => $nextRun,
+                'tax_per_item' => $perItemTax,
+                'discount_per_item' => $perItemDiscount,
                 'sub_total' => $totals['sub_total'],
                 'total' => $totals['total'],
                 'tax' => $totals['tax'],
                 'due_amount' => $totals['total'],
-                'exchange_rate' => $exchange_rate,
-                'base_sub_total' => $totals['sub_total'] * $exchange_rate,
-                'base_total' => $totals['total'] * $exchange_rate,
-                'base_tax' => $totals['tax'] * $exchange_rate,
-                'currency_id' => $currency,
+                'exchange_rate' => $rate,
+                'base_sub_total' => $totals['sub_total'] * $rate,
+                'base_total' => $totals['total'] * $rate,
+                'base_tax' => $totals['tax'] * $rate,
+                'currency_id' => $contactCurrency,
             ])
             ->toArray();
     }

@@ -4,10 +4,14 @@ namespace App\Domains\Receivables\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
 
+/**
+ * The composed receipt mail: an envelope and a body, both written by the
+ * sender. Copies are optional.
+ */
 class SendPaymentRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * The send ability is checked by the controller, against the payment.
      */
     public function authorize(): bool
     {
@@ -15,29 +19,17 @@ class SendPaymentRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * @return array<string, mixed>
      */
     public function rules(): array
     {
         return [
-            'subject' => [
-                'required',
-            ],
-            'body' => [
-                'required',
-            ],
-            'from' => [
-                'required',
-            ],
-            'to' => [
-                'required',
-            ],
-            'cc' => [
-                'nullable',
-            ],
-            'bcc' => [
-                'nullable',
-            ],
+            'subject' => ['required'],
+            'body' => ['required'],
+            'from' => ['required'],
+            'to' => ['required'],
+            'cc' => ['nullable'],
+            'bcc' => ['nullable'],
         ];
     }
 }

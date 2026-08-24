@@ -4,10 +4,14 @@ namespace App\Domains\Sales\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
 
+/**
+ * The envelope of an invoice mail: the message itself, who it comes from, who
+ * it goes to, and the optional carbon copies.
+ */
 class SendInvoiceRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * The send ability is checked in the controller.
      */
     public function authorize(): bool
     {
@@ -15,29 +19,17 @@ class SendInvoiceRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * @return array<string, mixed>
      */
     public function rules(): array
     {
         return [
-            'body' => [
-                'required',
-            ],
-            'subject' => [
-                'required',
-            ],
-            'from' => [
-                'required',
-            ],
-            'to' => [
-                'required',
-            ],
-            'cc' => [
-                'nullable',
-            ],
-            'bcc' => [
-                'nullable',
-            ],
+            'body' => 'required',
+            'subject' => 'required',
+            'from' => 'required',
+            'to' => 'required',
+            'cc' => 'nullable',
+            'bcc' => 'nullable',
         ];
     }
 }

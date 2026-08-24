@@ -6,49 +6,37 @@ use App\Domains\Sales\Models\Invoice;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 
+/**
+ * Daily sweep that flags invoices nobody paid in time.
+ *
+ * A document qualifies when it is a plain invoice — a credit note is never
+ * owed, so it stays out of the sweep whatever date it carries — is not already
+ * flagged, has left the draft stage without reaching completion, and its due
+ * date fell before today. The comparison is on the date alone, so an invoice
+ * due today is still in good standing until tomorrow.
+ */
 class CheckInvoiceStatus extends Command
 {
-    /**
-     * The name and signature of the console command.
-     *
-     * @var string
-     */
     protected $signature = 'check:invoices:status';
 
-    /**
-     * The console command description.
-     *
-     * @var string
-     */
     protected $description = 'Check invoices status.';
 
     /**
-     * Create a new command instance.
-     *
-     * @return void
-     */
-    public function __construct()
-    {
-        parent::__construct();
-    }
-
-    /**
-     * Execute the console command.
-     *
-     * @return mixed
+     * Flag every invoice that has slipped past its due date.
      */
     public function handle(): void
     {
-        $date = Carbon::now();
-        // Only real invoices can fall overdue: a credit note is never owed, so
-        // it must never be flagged no matter what date it carries.
-        $invoices = Invoice::where('type', Invoice::TYPE_INVOICE)
-            ->whereNotIn('status', [Invoice::STATUS_COMPLETED, Invoice::STATUS_DRAFT])
+        $today = Carbon::now();
+
+        $exempt = [Invoice::STATUS_COMPLETED, Invoice::STATUS_DRAFT];
+
+        $overdue = Invoice::where('type', Invoice::TYPE_INVOICE)
+            ->whereNotIn('status', $exempt)
             ->where('overdue', false)
-            ->whereDate('due_date', '<', $date)
+            ->whereDate('due_date', '<', $today)
             ->get();
 
-        foreach ($invoices as $invoice) {
+        foreach ($overdue as $invoice) {
             $invoice->overdue = true;
             printf("Invoice %s is OVERDUE \n", $invoice->invoice_number);
             $invoice->save();

@@ -7,29 +7,43 @@ use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
+/**
+ * A single company role, shaped for the role editor.
+ *
+ * The abilities travel as the live grant set read back through Bouncer rather
+ * than as whatever was last submitted, so the payload always reports what the
+ * store actually holds.
+ */
 class RoleResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
-     *
      * @param  Request  $request
      */
     public function toArray($request): array
     {
+        $role = $this->resource;
+        $createdAt = $this->getFormattedAt();
+
         return [
-            'id' => $this->id,
-            'name' => $this->name,
-            'title' => $this->title,
-            'level' => $this->level,
-            'formatted_created_at' => $this->getFormattedAt(),
-            'abilities' => $this->getAbilities(),
+            'id' => $role->id,
+            'name' => $role->name,
+            'title' => $role->title,
+            'level' => $role->level,
+            'formatted_created_at' => $createdAt,
+            'abilities' => $role->getAbilities(),
         ];
     }
 
+    /**
+     * The creation date in the date format of the company owning the role.
+     *
+     * The format follows the role's own scope, not the company the reader is
+     * looking in from.
+     */
     public function getFormattedAt()
     {
-        $dateFormat = CompanySetting::getSetting('carbon_date_format', $this->scope);
+        $format = CompanySetting::getSetting('carbon_date_format', $this->scope);
 
-        return Carbon::parse($this->created_at)->translatedFormat($dateFormat);
+        return Carbon::parse($this->created_at)->translatedFormat($format);
     }
 }

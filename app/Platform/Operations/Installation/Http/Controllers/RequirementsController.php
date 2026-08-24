@@ -8,10 +8,7 @@ use Illuminate\Http\JsonResponse;
 
 class RequirementsController extends Controller
 {
-    /**
-     * @var RequirementsChecker
-     */
-    protected $requirements;
+    protected RequirementsChecker $requirements;
 
     public function __construct(RequirementsChecker $checker)
     {
@@ -19,23 +16,18 @@ class RequirementsController extends Controller
     }
 
     /**
-     * Display the requirements page.
-     *
-     * @return JsonResponse
+     * First wizard gate: the interpreter version block plus the per-extension
+     * verdicts drawn from config/installer.php.
      */
-    public function requirements()
+    public function requirements(): JsonResponse
     {
-        $phpSupportInfo = $this->requirements->checkPHPVersion(
-            config('installer.core.minPhpVersion')
-        );
-
-        $requirements = $this->requirements->check(
-            config('installer.requirements')
-        );
-
         return response()->json([
-            'phpSupportInfo' => $phpSupportInfo,
-            'requirements' => $requirements,
+            'phpSupportInfo' => $this->requirements->checkPHPVersion(
+                config('installer.core.minPhpVersion')
+            ),
+            'requirements' => $this->requirements->check(
+                config('installer.requirements')
+            ),
         ]);
     }
 }

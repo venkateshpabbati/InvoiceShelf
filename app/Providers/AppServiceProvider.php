@@ -15,40 +15,43 @@ use Silber\Bouncer\Database\Models as BouncerModels;
 class AppServiceProvider extends ServiceProvider
 {
     /**
-     * The path to your application's "home" route.
+     * Where a signed-in staff user lands.
      *
-     * Typically, users are redirected here after authentication.
+     * The authentication layer redirects here once credentials check out.
      *
      * @var string
      */
     public const HOME = '/admin/dashboard';
 
     /**
-     * The path to the "customer home" route for your application.
+     * Where a signed-in portal customer lands.
      *
-     * This is used by Laravel authentication to redirect customers after login.
+     * The customer guard redirects here once credentials check out.
      *
      * @var string
      */
     public const CUSTOMER_HOME = '/customer/dashboard';
 
     /**
-     * Bootstrap any application services.
+     * Boot the application-wide behaviour.
      */
     public function boot(): void
     {
         ModelIdentityMap::enforce();
+
         Factory::guessFactoryNamesUsing(
-            fn (string $modelName): string => 'Database\\Factories\\'.class_basename($modelName).'Factory'
+            fn (string $model): string => 'Database\\Factories\\'.class_basename($model).'Factory'
         );
 
+        // Navigation is built from config only once there is a schema to talk
+        // to; during a fresh install the tables do not exist yet.
         if (InstallationState::isDbCreated()) {
             $this->addMenus();
         }
 
         $this->bootBroadcast();
 
-        // In demo mode, prevent all outgoing emails and notifications
+        // The public demo build must never put real mail on the wire.
         if (config('app.env') === 'demo') {
             Mail::fake();
             Notification::fake();
@@ -56,57 +59,68 @@ class AppServiceProvider extends ServiceProvider
     }
 
     /**
-     * Register any application services.
+     * Register container bindings.
      */
     public function register(): void
     {
         BouncerModels::scope(new BouncerDefaultScope);
     }
 
+    /**
+     * Publish every navigation tree the SPA can ask for.
+     *
+     * Keys are the registered menu names; values are the config entries each
+     * one is built from. Note the customer portal menu is registered under a
+     * name that differs from its config key.
+     */
     public function addMenus()
     {
-        // main menu
-        \Menu::make('main_menu', function ($menu) {
-            foreach (config('invoiceshelf.main_menu') as $data) {
-                $this->generateMenu($menu, $data);
-            }
-        });
+        $sources = [
+            'main_menu' => 'invoiceshelf.main_menu',
+            'admin_menu' => 'invoiceshelf.admin_menu',
+            'setting_menu' => 'invoiceshelf.setting_menu',
+            'customer_portal_menu' => 'invoiceshelf.customer_menu',
+        ];
 
-        // admin menu (super admin mode)
-        \Menu::make('admin_menu', function ($menu) {
-            foreach (config('invoiceshelf.admin_menu') as $data) {
-                $this->generateMenu($menu, $data);
-            }
-        });
-
-        // setting menu
-        \Menu::make('setting_menu', function ($menu) {
-            foreach (config('invoiceshelf.setting_menu') as $data) {
-                $this->generateMenu($menu, $data);
-            }
-        });
-
-        \Menu::make('customer_portal_menu', function ($menu) {
-            foreach (config('invoiceshelf.customer_menu') as $data) {
-                $this->generateMenu($menu, $data);
-            }
-        });
+        foreach ($sources as $name => $configKey) {
+            \Menu::make($name, function ($menu) use ($configKey) {
+                foreach (config($configKey) as $data) {
+                    $this->generateMenu($menu, $data);
+                }
+            });
+        }
     }
 
+    /**
+     * Append one configured entry to a menu under construction.
+     *
+     * Everything past the title and link rides along as item metadata, which
+     * is what the bootstrap endpoints filter and hand to the frontend.
+     */
     public function generateMenu($menu, $data)
     {
-        $menu->add($data['title'], $data['link'])
-            ->data('icon', $data['icon'])
-            ->data('name', $data['name'])
-            ->data('owner_only', $data['owner_only'])
-            ->data('super_admin_only', $data['super_admin_only'] ?? false)
-            ->data('ability', $data['ability'])
-            ->data('model', $data['model'])
-            ->data('group', $data['group'])
-            ->data('group_label', $data['group_label'] ?? '')
-            ->data('priority', $data['priority'] ?? 100);
+        $item = $menu->add($data['title'], $data['link']);
+
+        $meta = [
+            'icon' => $data['icon'],
+            'name' => $data['name'],
+            'owner_only' => $data['owner_only'],
+            'super_admin_only' => $data['super_admin_only'] ?? false,
+            'ability' => $data['ability'],
+            'model' => $data['model'],
+            'group' => $data['group'],
+            'group_label' => $data['group_label'] ?? '',
+            'priority' => $data['priority'] ?? 100,
+        ];
+
+        foreach ($meta as $key => $value) {
+            $item->data($key, $value);
+        }
     }
 
+    /**
+     * Expose the broadcasting auth endpoint behind the API guard.
+     */
     public function bootBroadcast()
     {
         Broadcast::routes(['middleware' => 'api.auth']);

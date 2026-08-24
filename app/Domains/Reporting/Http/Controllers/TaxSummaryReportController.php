@@ -11,86 +11,133 @@ use App\Platform\Pdf\Facades\Pdf;
 use App\Platform\Pdf\Rendering\PdfPageSetup;
 use App\Platform\Pdf\Rendering\PdfTemplateUtils;
 use Carbon\Carbon;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\App;
 use Silber\Bouncer\BouncerFacade;
 
+/**
+ * Tax collected against tax paid over a period, per tax type.
+ *
+ * The collected side counts only tax recorded against invoices that have been
+ * settled, since tax on an invoice still owing has not been collected, and it
+ * picks up rows attached to a line as readily as rows attached to the document.
+ * The paid side has no such condition: an expense is money already out of the
+ * door. What is left over is the balance with the tax authority, which is
+ * payable when positive and refundable when negative.
+ */
 class TaxSummaryReportController extends Controller
 {
     /**
-     * Handle the incoming request.
+     * Render the report for the company the hash names.
      *
      * @param  string  $hash
-     * @return JsonResponse
      */
     public function __invoke(Request $request, $hash)
     {
-        $company = Company::where('unique_hash', $hash)->firstOrFail();
+        $company = $this->reportedCompany($hash);
 
-        // These routes carry no company header, so ScopeBouncer is not in their
-        // middleware stack and the ability scope was never set. 'view-financial-reports'
-        // is stored scoped to a company, so the unscoped check always failed and every
-        // report PDF answered 403. Scope to the company named in the URL: the policy
-        // still checks membership, so this grants nothing new.
+        App::setLocale(CompanySetting::getSetting('language', $company->id));
+
+        $window = $request->only(['from_date', 'to_date']);
+
+        $collected = Tax::query()
+            ->with('taxType')
+            ->whereCompany($company->id)
+            ->whereInvoicesFilters($window)
+            ->taxAttributes()
+            ->get();
+
+        $collectedTotal = (int) $collected->sum('total_tax_amount');
+
+        $paid = Tax::query()
+            ->with('taxType')
+            ->whereCompany($company->id)
+            ->whereExpensesFilters($window)
+            ->taxAttributes()
+            ->get();
+
+        $paidTotal = (int) $paid->sum('total_tax_amount');
+
+        view()->share([
+            'taxTypes' => $collected,
+            'totalTaxAmount' => $collectedTotal,
+            'expenseTaxTypes' => $paid,
+            'totalExpenseTaxAmount' => $paidTotal,
+            'netTaxAmount' => $collectedTotal - $paidTotal,
+        ] + $this->pageChrome($request, $company));
+
+        return $this->emit($request, 'tax-summary');
+    }
+
+    /**
+     * The company named by the hash, once the caller has been let through.
+     *
+     * Nothing upstream tells Bouncer which company to weigh abilities against:
+     * these links carry no company header, and the report ability is stored
+     * per company, so the unscoped check matched nothing and every report
+     * answered 403. Pointing the scope at the company in the URL settles that
+     * without widening access, because the policy still asks for membership.
+     * The hash is an address, not a credential.
+     *
+     * @param  string  $hash
+     */
+    private function reportedCompany($hash): Company
+    {
+        $company = Company::query()->where('unique_hash', $hash)->firstOrFail();
+
         BouncerFacade::scope()->to($company->id);
 
         $this->authorize('view report', $company);
 
-        $locale = CompanySetting::getSetting('language', $company->id);
+        return $company;
+    }
 
-        App::setLocale($locale);
+    /**
+     * What every report prints around its figures: the company and its logo,
+     * the window in the company's own date format, and the currency the
+     * amounts are stated in.
+     *
+     * @return array<string, mixed>
+     */
+    private function pageChrome(Request $request, Company $company): array
+    {
+        $pattern = CompanySetting::getSetting('carbon_date_format', $company->id);
+        $opened = Carbon::createFromFormat('Y-m-d', $request->from_date)->translatedFormat($pattern);
+        $closed = Carbon::createFromFormat('Y-m-d', $request->to_date)->translatedFormat($pattern);
+        $currencyId = CompanySetting::getSetting('currency', $company->id);
+        $currency = Currency::findOrFail($currencyId);
 
-        $taxTypes = Tax::with('taxType')
-            ->whereCompany($company->id)
-            ->whereInvoicesFilters($request->only(['from_date', 'to_date']))
-            ->taxAttributes()
-            ->get();
-
-        $totalAmount = (int) $taxTypes->sum('total_tax_amount');
-
-        $expenseTaxTypes = Tax::with('taxType')
-            ->whereCompany($company->id)
-            ->whereExpensesFilters($request->only(['from_date', 'to_date']))
-            ->taxAttributes()
-            ->get();
-
-        $totalExpenseTaxAmount = (int) $expenseTaxTypes->sum('total_tax_amount');
-        $netTaxAmount = $totalAmount - $totalExpenseTaxAmount;
-
-        $dateFormat = CompanySetting::getSetting('carbon_date_format', $company->id);
-        $from_date = Carbon::createFromFormat('Y-m-d', $request->from_date)->translatedFormat($dateFormat);
-        $to_date = Carbon::createFromFormat('Y-m-d', $request->to_date)->translatedFormat($dateFormat);
-        $currency = Currency::findOrFail(CompanySetting::getSetting('currency', $company->id));
-
-        view()->share([
-            'taxTypes' => $taxTypes,
-            'totalTaxAmount' => $totalAmount,
-            'expenseTaxTypes' => $expenseTaxTypes,
-            'totalExpenseTaxAmount' => $totalExpenseTaxAmount,
-            'netTaxAmount' => $netTaxAmount,
+        return [
             'company' => $company,
             'logo' => $company->logo_path,
-            'from_date' => $from_date,
-            'to_date' => $to_date,
+            'from_date' => $opened,
+            'to_date' => $closed,
             'currency' => $currency,
-        ]);
+        ];
+    }
 
-        // Renders a same-named file from storage/app/templates/pdf/reports/
-        // when one exists, so a report can be overridden without a
-        // template picker it has no concept of.
-        $templatePath = PdfTemplateUtils::resolveView('reports', 'tax-summary');
+    /**
+     * Hand the rendered report over in whichever of the three shapes the query
+     * string asks for.
+     *
+     * Reports have no template chooser, so an override is a file of the same
+     * name dropped into storage/app/templates/pdf/reports/, which the resolver
+     * prefers over the built-in one.
+     *
+     * The document is built before the preview branch is taken and not after:
+     * a preview costs a full render it never uses, which is wasteful but is
+     * also what the templates have always been exercised through.
+     */
+    private function emit(Request $request, string $design)
+    {
+        $design = PdfTemplateUtils::resolveView('reports', $design);
 
-        $pdf = Pdf::loadView($templatePath, [], PdfPageSetup::forReports());
+        $document = Pdf::loadView($design, [], PdfPageSetup::forReports());
 
-        if ($request->has('preview')) {
-            return view($templatePath);
+        if ($request->exists('preview')) {
+            return view($design);
         }
 
-        if ($request->has('download')) {
-            return $pdf->download();
-        }
-
-        return $pdf->stream();
+        return $request->exists('download') ? $document->download() : $document->stream();
     }
 }

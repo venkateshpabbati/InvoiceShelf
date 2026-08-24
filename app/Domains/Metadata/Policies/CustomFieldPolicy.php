@@ -7,105 +7,68 @@ use App\Domains\Metadata\Models\CustomField;
 use Illuminate\Auth\Access\HandlesAuthorization;
 use Silber\Bouncer\BouncerFacade;
 
+/**
+ * Who may work with custom-field definitions.
+ *
+ * Every decision aimed at a definition has two halves: the Bouncer ability,
+ * and membership of the company that definition belongs to, so an ability
+ * held in one company never reaches another company's fields. The two
+ * class-level decisions -- listing and creating -- have no row to check
+ * membership against and rest on the ability alone.
+ *
+ * Bouncer answers for the user it currently has scoped, not for the $user
+ * handed in; that argument only feeds the membership half.
+ */
 class CustomFieldPolicy
 {
     use HandlesAuthorization;
 
-    /**
-     * Determine whether the user can view any models.
-     *
-     * @return mixed
-     */
     public function viewAny(User $user): bool
     {
-        if (BouncerFacade::can('view-custom-field', CustomField::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-custom-field', CustomField::class);
     }
 
-    /**
-     * Determine whether the user can view the model.
-     *
-     * @return mixed
-     */
     public function view(User $user, CustomField $customField): bool
     {
-        if (BouncerFacade::can('view-custom-field', $customField) && $user->hasCompany($customField->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-custom-field', $customField) && $this->sameCompany($user, $customField);
     }
 
-    /**
-     * Determine whether the user can create models.
-     *
-     * @return mixed
-     */
     public function create(User $user): bool
     {
-        if (BouncerFacade::can('create-custom-field', CustomField::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('create-custom-field', CustomField::class);
     }
 
-    /**
-     * Determine whether the user can update the model.
-     *
-     * @return mixed
-     */
     public function update(User $user, CustomField $customField): bool
     {
-        if (BouncerFacade::can('edit-custom-field', $customField) && $user->hasCompany($customField->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('edit-custom-field', $customField) && $this->sameCompany($user, $customField);
     }
 
-    /**
-     * Determine whether the user can delete the model.
-     *
-     * @return mixed
-     */
     public function delete(User $user, CustomField $customField): bool
     {
-        if (BouncerFacade::can('delete-custom-field', $customField) && $user->hasCompany($customField->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $customField);
     }
 
     /**
-     * Determine whether the user can restore the model.
-     *
-     * @return mixed
+     * Restoring and erasing are governed by the delete ability as well;
+     * definitions are not soft-deleted, so neither is reachable in practice.
      */
     public function restore(User $user, CustomField $customField): bool
     {
-        if (BouncerFacade::can('delete-custom-field', $customField) && $user->hasCompany($customField->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $customField);
     }
 
-    /**
-     * Determine whether the user can permanently delete the model.
-     *
-     * @return mixed
-     */
     public function forceDelete(User $user, CustomField $customField): bool
     {
-        if (BouncerFacade::can('delete-custom-field', $customField) && $user->hasCompany($customField->company_id)) {
-            return true;
-        }
+        return $this->mayRemove($user, $customField);
+    }
 
-        return false;
+    private function mayRemove(User $user, CustomField $customField): bool
+    {
+        return BouncerFacade::can('delete-custom-field', $customField) && $this->sameCompany($user, $customField);
+    }
+
+    private function sameCompany(User $user, CustomField $customField): bool
+    {
+        return $user->hasCompany($customField->company_id);
     }
 }

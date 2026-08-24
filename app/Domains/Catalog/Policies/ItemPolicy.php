@@ -7,119 +7,77 @@ use App\Domains\Catalog\Models\Item;
 use Illuminate\Auth\Access\HandlesAuthorization;
 use Silber\Bouncer\BouncerFacade;
 
+/**
+ * Who may work with catalogue items.
+ *
+ * Every decision pairs a Bouncer ability with -- for anything aimed at an
+ * existing row -- membership of that row's company, so an ability granted
+ * inside one company never reaches another company's catalogue.
+ *
+ * Bouncer answers for the user it currently has scoped, not for the $user
+ * handed in; that argument feeds only the membership half.
+ */
 class ItemPolicy
 {
     use HandlesAuthorization;
 
-    /**
-     * Determine whether the user can view any models.
-     *
-     * @return mixed
-     */
     public function viewAny(User $user): bool
     {
-        if (BouncerFacade::can('view-item', Item::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-item', Item::class);
     }
 
-    /**
-     * Determine whether the user can view the model.
-     *
-     * @return mixed
-     */
     public function view(User $user, Item $item): bool
     {
-        if (BouncerFacade::can('view-item', $item) && $user->hasCompany($item->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-item', $item) && $this->sameCompany($user, $item);
     }
 
-    /**
-     * Determine whether the user can create models.
-     *
-     * @return mixed
-     */
     public function create(User $user): bool
     {
-        if (BouncerFacade::can('create-item', Item::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('create-item', Item::class);
     }
 
-    /**
-     * Determine whether the user can update the model.
-     *
-     * @return mixed
-     */
     public function update(User $user, Item $item): bool
     {
-        if (BouncerFacade::can('edit-item', $item) && $user->hasCompany($item->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('edit-item', $item) && $this->sameCompany($user, $item);
     }
 
-    /**
-     * Determine whether the user can delete the model.
-     *
-     * @return mixed
-     */
     public function delete(User $user, Item $item): bool
     {
-        if (BouncerFacade::can('delete-item', $item) && $user->hasCompany($item->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $item);
     }
 
     /**
-     * Determine whether the user can restore the model.
-     *
-     * @return mixed
+     * Items are not soft-deleted, so neither restoring nor erasing is
+     * reachable in practice; both answer with the delete rule.
      */
     public function restore(User $user, Item $item): bool
     {
-        if (BouncerFacade::can('delete-item', $item) && $user->hasCompany($item->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $item);
     }
 
-    /**
-     * Determine whether the user can permanently delete the model.
-     *
-     * @return mixed
-     */
     public function forceDelete(User $user, Item $item): bool
     {
-        if (BouncerFacade::can('delete-item', $item) && $user->hasCompany($item->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $item);
     }
 
     /**
-     * Determine whether the user can delete models.
-     *
-     * @return mixed
+     * The model-level counterpart for removing several items at once. It is
+     * company-blind by construction -- there is no row here to check
+     * membership against -- and the bulk endpoint does not consult it today,
+     * gating on the bare "delete multiple items" permission instead.
      */
     public function deleteMultiple(User $user)
     {
-        if (BouncerFacade::can('delete-item', Item::class)) {
-            return true;
-        }
+        return BouncerFacade::can('delete-item', Item::class);
+    }
 
-        return false;
+    private function mayRemove(User $user, Item $item): bool
+    {
+        return BouncerFacade::can('delete-item', $item) && $this->sameCompany($user, $item);
+    }
+
+    private function sameCompany(User $user, Item $item): bool
+    {
+        return $user->hasCompany($item->company_id);
     }
 }

@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\File;
 class ModuleResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
+     * Merge one marketplace catalog row with locally installed module state.
      *
      * @param  Request  $request
      * @return array|Arrayable|\JsonSerializable

@@ -15,7 +15,7 @@ class DashboardController extends Controller
     ) {}
 
     /**
-     * Handle the incoming request.
+     * Answer with the portal dashboard figures for the signed-in contact.
      *
      * @return Response
      */

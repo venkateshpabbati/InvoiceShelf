@@ -5,11 +5,12 @@ namespace App\Domains\Contacts\Http\Resources\CustomerPortal;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
+/**
+ * A country of the reference list as the customer portal publishes it.
+ */
 class CountryResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
-     *
      * @param  Request  $request
      */
     public function toArray($request): array

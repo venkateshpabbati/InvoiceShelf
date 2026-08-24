@@ -22,7 +22,12 @@ class MetadataServiceProvider extends ServiceProvider
     {
         Gate::policy(CustomField::class, CustomFieldPolicy::class);
         Gate::policy(Note::class, NotePolicy::class);
-        Gate::define('manage notes', [NotePolicy::class, 'manageNotes']);
-        Gate::define('view notes', [NotePolicy::class, 'viewNotes']);
+        $noteAbilities = [
+            'manage notes' => 'manageNotes',
+            'view notes' => 'viewNotes',
+        ];
+        foreach ($noteAbilities as $ability => $method) {
+            Gate::define($ability, [NotePolicy::class, $method]);
+        }
     }
 }

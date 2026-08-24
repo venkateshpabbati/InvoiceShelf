@@ -6,6 +6,13 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
 use Illuminate\Queue\SerializesModels;
 
+/**
+ * Tells the company that one of its estimates has just been opened.
+ *
+ * This one travels inward, to the address the company nominated for view
+ * notifications, so it goes out under the installation's own mail identity
+ * rather than the address the estimate itself was sent from.
+ */
 class EstimateViewedMail extends Mailable
 {
     use Queueable;
@@ -14,24 +21,28 @@ class EstimateViewedMail extends Mailable
     public $data;
 
     /**
-     * Create a new message instance.
-     *
-     * @return void
+     * @param  array  $data  the estimate that was opened and the user it
+     *                       belongs to, shaped as the view expects them
      */
-    public function __construct($data)
-    {
+    public function __construct(
+        $data
+    ) {
         $this->data = $data;
     }
 
     /**
-     * Build the message.
-     *
      * @return $this
      */
     public function build()
     {
-        return $this->from(config('mail.from.address'), config('mail.from.name'))
-            ->subject(__('notification_view_estimate'))
-            ->markdown('emails.viewed.estimate', ['data', $this->data]);
+        return $this->subject(__('notification_view_estimate'))
+            ->from(config('mail.from.address'), config('mail.from.name'))
+            ->markdown('emails.viewed.estimate', [
+                // Handed over as a list, not as a keyed array. The numeric
+                // keys that produces are inert: the view reads $data, which
+                // Laravel already supplies from the public property above.
+                'data',
+                $this->data,
+            ]);
     }
 }

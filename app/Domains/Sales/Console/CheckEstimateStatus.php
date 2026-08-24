@@ -6,45 +6,41 @@ use App\Domains\Sales\Models\Estimate;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 
+/**
+ * Daily sweep that retires estimates whose offer has run out.
+ *
+ * Anything that has not already reached a terminal state — accepted, rejected
+ * or expired — and whose expiry date fell before today is moved to expired.
+ * Drafts are swept along with the rest, and the comparison is on the date
+ * alone, so an estimate expiring today survives until tomorrow.
+ */
 class CheckEstimateStatus extends Command
 {
-    /**
-     * The name and signature of the console command.
-     *
-     * @var string
-     */
     protected $signature = 'check:estimates:status';
 
-    /**
-     * The console command description.
-     *
-     * @var string
-     */
     protected $description = 'Check invoices status.';
 
     /**
-     * Create a new command instance.
-     *
-     * @return void
-     */
-    public function __construct()
-    {
-        parent::__construct();
-    }
-
-    /**
-     * Execute the console command.
-     *
-     * @return mixed
+     * Expire every estimate that has outlived its expiry date.
      */
     public function handle(): void
     {
-        $date = Carbon::now();
-        $status = [Estimate::STATUS_ACCEPTED, Estimate::STATUS_REJECTED, Estimate::STATUS_EXPIRED];
-        $estimates = Estimate::whereNotIn('status', $status)->whereDate('expiry_date', '<', $date)->get();
+        $today = Carbon::now();
 
-        foreach ($estimates as $estimate) {
-            $estimate->status = Estimate::STATUS_EXPIRED;
+        $expired = Estimate::STATUS_EXPIRED;
+
+        $settled = [
+            Estimate::STATUS_ACCEPTED,
+            Estimate::STATUS_REJECTED,
+            $expired,
+        ];
+
+        $lapsed = Estimate::whereNotIn('status', $settled)
+            ->whereDate('expiry_date', '<', $today)
+            ->get();
+
+        foreach ($lapsed as $estimate) {
+            $estimate->status = $expired;
             printf("Estimate %s is EXPIRED \n", $estimate->estimate_number);
             $estimate->save();
         }

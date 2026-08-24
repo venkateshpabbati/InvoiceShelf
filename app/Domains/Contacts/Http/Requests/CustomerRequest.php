@@ -8,10 +8,66 @@ use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Arr;
 use Illuminate\Validation\Rule;
 
+/**
+ * Validates and reshapes the admin contact form, for both create and update.
+ *
+ * Only the display name is actually required and only the email is actually
+ * checked, so most of the work here is deciding what counts as "an address was
+ * submitted" and handing the service three tidy arrays.
+ */
 class CustomerRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * Columns copied straight from the validated payload onto the contact row.
+     *
+     * The three document prefixes at the end carry no validation rule, so
+     * `validated()` never holds them and they can never be written through
+     * here. Left listed all the same.
+     */
+    private const PERSISTED_FIELDS = [
+        'name',
+        'email',
+        'currency_id',
+        'password',
+        'phone',
+        'prefix',
+        'tax_id',
+        'company_name',
+        'contact_name',
+        'website',
+        'enable_portal',
+        'estimate_prefix',
+        'payment_prefix',
+        'invoice_prefix',
+    ];
+
+    /** Optional and unchecked — declared only so the payload is not rejected. */
+    private const OPTIONAL_FIELDS = [
+        'password',
+        'phone',
+        'company_name',
+        'contact_name',
+        'website',
+        'prefix',
+        'tax_id',
+    ];
+
+    /** The shape of one address block, billing and shipping alike. */
+    private const ADDRESS_FIELDS = [
+        'name',
+        'address_street_1',
+        'address_street_2',
+        'city',
+        'state',
+        'country_id',
+        'zip',
+        'phone',
+        'fax',
+    ];
+
+    /**
+     * Nothing is settled at this layer; the contact policy runs in the
+     * controller, so every caller that got this far is let through.
      */
     public function authorize(): bool
     {
@@ -19,182 +75,122 @@ class CustomerRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * Built in the order the fields are declared, so the error bag comes back
+     * in the same order it always has.
+     *
+     * @return array<string, array<int, mixed>>
      */
     public function rules(): array
     {
         $rules = [
-            'name' => [
-                'required',
-            ],
-            'email' => [
-                new IdnEmail,
-                'nullable',
-                Rule::unique('customers')->where('company_id', $this->header('company')),
-            ],
-            'password' => [
-                'nullable',
-            ],
-            'phone' => [
-                'nullable',
-            ],
-            'company_name' => [
-                'nullable',
-            ],
-            'contact_name' => [
-                'nullable',
-            ],
-            'website' => [
-                'nullable',
-            ],
-            'prefix' => [
-                'nullable',
-            ],
-            'tax_id' => [
-                'nullable',
-            ],
-            'enable_portal' => [
-                'boolean',
-            ],
-            'currency_id' => [
-                'nullable',
-            ],
-            'billing.name' => [
-                'nullable',
-            ],
-            'billing.address_street_1' => [
-                'nullable',
-            ],
-            'billing.address_street_2' => [
-                'nullable',
-            ],
-            'billing.city' => [
-                'nullable',
-            ],
-            'billing.state' => [
-                'nullable',
-            ],
-            'billing.country_id' => [
-                'nullable',
-            ],
-            'billing.zip' => [
-                'nullable',
-            ],
-            'billing.phone' => [
-                'nullable',
-            ],
-            'billing.fax' => [
-                'nullable',
-            ],
-            'shipping.name' => [
-                'nullable',
-            ],
-            'shipping.address_street_1' => [
-                'nullable',
-            ],
-            'shipping.address_street_2' => [
-                'nullable',
-            ],
-            'shipping.city' => [
-                'nullable',
-            ],
-            'shipping.state' => [
-                'nullable',
-            ],
-            'shipping.country_id' => [
-                'nullable',
-            ],
-            'shipping.zip' => [
-                'nullable',
-            ],
-            'shipping.phone' => [
-                'nullable',
-            ],
-            'shipping.fax' => [
-                'nullable',
-            ],
+            'name' => ['required'],
+            'email' => $this->emailRules(),
         ];
 
-        if ($this->isMethod('PUT') && $this->email != null) {
-            $rules['email'] = [
-                new IdnEmail,
-                'nullable',
-                Rule::unique('customers')->where('company_id', $this->header('company'))->ignore($this->route('customer')->id),
-            ];
+        foreach (self::OPTIONAL_FIELDS as $field) {
+            $rules[$field] = ['nullable'];
+        }
+
+        $rules['enable_portal'] = ['boolean'];
+        $rules['currency_id'] = ['nullable'];
+
+        foreach (['billing', 'shipping'] as $block) {
+            foreach (self::ADDRESS_FIELDS as $field) {
+                $rules[$block.'.'.$field] = ['nullable'];
+            }
         }
 
         return $rules;
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The row to persist: the allow-listed columns of the validated payload,
+     * with authorship and tenancy stamped on top of whatever was sent.
+     *
+     * @return array<string, mixed>
+     */
     public function customerAttributes(): array
     {
-        return collect($this->validated())
-            ->only([
-                'name',
-                'email',
-                'currency_id',
-                'password',
-                'phone',
-                'prefix',
-                'tax_id',
-                'company_name',
-                'contact_name',
-                'website',
-                'enable_portal',
-                'estimate_prefix',
-                'payment_prefix',
-                'invoice_prefix',
-            ])
-            ->merge([
-                'creator_id' => $this->user()->id,
-                'company_id' => $this->header('company'),
-            ])
-            ->toArray();
+        $attributes = Arr::only($this->validated(), self::PERSISTED_FIELDS);
+
+        $attributes['creator_id'] = $this->user()->id;
+        $attributes['company_id'] = $this->header('company');
+
+        return $attributes;
     }
 
-    /** @return array<string, mixed>|null */
+    /**
+     * The shipping block, ready for the addresses table.
+     *
+     * @return array<string, mixed>|null
+     */
     public function shippingAddress(): ?array
     {
-        $address = $this->input('shipping');
-
-        if (! is_array($address) || ! $this->hasAddress($address)) {
-            return null;
-        }
-
-        return collect($address)
-            ->merge([
-                'type' => Address::SHIPPING_TYPE,
-            ])
-            ->toArray();
+        return $this->addressBlock('shipping', Address::SHIPPING_TYPE);
     }
 
-    /** @return array<string, mixed>|null */
+    /**
+     * The billing block, ready for the addresses table.
+     *
+     * @return array<string, mixed>|null
+     */
     public function billingAddress(): ?array
     {
-        $address = $this->input('billing');
+        return $this->addressBlock('billing', Address::BILLING_TYPE);
+    }
 
-        if (! is_array($address) || ! $this->hasAddress($address)) {
+    /**
+     * Custom-field values, or null when none came in. An empty array counts as
+     * none, so the writer is never called for nothing.
+     *
+     * @return array<int, mixed>|null
+     */
+    public function customFields(): ?array
+    {
+        $values = $this->input('customFields');
+
+        if (! is_array($values) || $values === []) {
             return null;
         }
 
-        return collect($address)
-            ->merge([
-                'type' => Address::BILLING_TYPE,
-            ])
-            ->toArray();
+        return $values;
     }
 
-    /** @return array<int, mixed>|null */
-    public function customFields(): ?array
+    /**
+     * Optional, but once given it has to parse — internationalised domains
+     * included — and be unclaimed by another contact of the same company.
+     *
+     * On an update carrying an address the contact being edited is excused
+     * from that check. The verb test is exact, so the same payload sent as
+     * PATCH would collide with the contact's own row; kept as it stands.
+     *
+     * @return array<int, mixed>
+     */
+    private function emailRules(): array
     {
-        $customFields = $this->input('customFields');
+        $unclaimed = Rule::unique('customers')->where('company_id', $this->header('company'));
 
-        return is_array($customFields) && $customFields !== [] ? $customFields : null;
+        if ($this->email != null && $this->isMethod('PUT')) {
+            $unclaimed->ignore($this->route('customer')->id);
+        }
+
+        return [new IdnEmail, 'nullable', $unclaimed];
     }
 
-    private function hasAddress(array $address): bool
+    /**
+     * One address block tagged with its type, or null when the payload has no
+     * such block — a block whose every field is null counts as no block.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function addressBlock(string $key, string $type): ?array
     {
-        return Arr::where($address, fn ($value): bool => isset($value)) !== [];
+        $block = $this->input($key);
+
+        if (! is_array($block) || Arr::where($block, fn ($value): bool => isset($value)) === []) {
+            return null;
+        }
+
+        return array_merge($block, ['type' => $type]);
     }
 }

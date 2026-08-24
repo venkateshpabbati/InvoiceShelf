@@ -7,7 +7,8 @@ use Illuminate\Foundation\Http\FormRequest;
 class CreditAllocationRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * Access is settled by the controller, which weighs the customer and
+     * every payment named in the payload; this class only shapes input.
      */
     public function authorize(): bool
     {
@@ -15,7 +16,7 @@ class CreditAllocationRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * Credit rows: which payment covers which invoice, and by how much.
      *
      * @return array<string, array<int, string>>
      */

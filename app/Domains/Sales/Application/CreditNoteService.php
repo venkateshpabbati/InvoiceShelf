@@ -40,6 +40,12 @@ class CreditNoteService
     ) {}
 
     /**
+     * What the freshly written credit note is re-read with, so the caller hands
+     * back a document the API resource can render whole.
+     */
+    private const RESPONSE_RELATIONS = ['items', 'items.fields', 'items.fields.customField', 'customer', 'taxes', 'relatedInvoice'];
+
+    /**
      * Create a credit note reversing the given invoice.
      *
      * @param  array  $items  lines to credit as [['id' => invoiceItemId, 'quantity' => float], ...].
@@ -84,14 +90,7 @@ class CreditNoteService
 
             $this->recalculateBalance($original);
 
-            return Invoice::with([
-                'items',
-                'items.fields',
-                'items.fields.customField',
-                'customer',
-                'taxes',
-                'relatedInvoice',
-            ])->find($creditNote->id);
+            return Invoice::with(self::RESPONSE_RELATIONS)->find($creditNote->id);
         });
     }
 
@@ -182,6 +181,25 @@ class CreditNoteService
             ->setSequenceScope(['type' => Invoice::TYPE_CREDIT_NOTE])
             ->setNextNumbers();
 
+        // The builder resolved all three figures in the pass above; read them
+        // off it here so the document below stays plain data.
+        $number = $serial->getNextNumber();
+        $sequence = $serial->nextSequenceNumber;
+        $customerSequence = $serial->nextCustomerSequenceNumber;
+
+        // Columns the reversal inherits verbatim: it has to sit in the same
+        // currency, tax and discount regime as the document it undoes, or the
+        // two would not net out against each other.
+        $carriedOver = $invoice->only([
+            'discount',
+            'discount_type',
+            'tax_per_item',
+            'discount_per_item',
+            'currency_id',
+            'sales_tax_type',
+            'sales_tax_address_type',
+        ]);
+
         // exchange_rate is a float multiplier, not a currency amount. The base_*
         // fields are pro-rated from the original's stored base_* integers by the
         // calculator, so they are negated as-is rather than recomputed through
@@ -195,9 +213,9 @@ class CreditNoteService
             // A reversal is never owed, so it has no due date at all. Leaving it
             // null also keeps the credit note out of every due/aging query.
             'due_date' => null,
-            'invoice_number' => $serial->getNextNumber(),
-            'sequence_number' => $serial->nextSequenceNumber,
-            'customer_sequence_number' => $serial->nextCustomerSequenceNumber,
+            'invoice_number' => $number,
+            'sequence_number' => $sequence,
+            'customer_sequence_number' => $customerSequence,
             'reference_number' => $invoice->invoice_number,
             'customer_id' => $invoice->customer_id,
             'company_id' => $invoice->company_id,
@@ -212,13 +230,9 @@ class CreditNoteService
             // surface as an open (negative) balance in any due/aging view.
             'paid_status' => Invoice::STATUS_PAID,
             'sub_total' => -$amounts['sub_total'],
-            'discount' => $invoice->discount,
-            'discount_type' => $invoice->discount_type,
             'discount_val' => -$amounts['discount_val'],
             'total' => -$amounts['total'],
             'due_amount' => 0,
-            'tax_per_item' => $invoice->tax_per_item,
-            'discount_per_item' => $invoice->discount_per_item,
             'tax' => -$amounts['tax'],
             'tax_included' => $invoice->tax_included,
             'notes' => $invoice->notes,
@@ -228,9 +242,7 @@ class CreditNoteService
             'base_total' => -$amounts['base_total'],
             'base_tax' => -$amounts['base_tax'],
             'base_due_amount' => 0,
-            'currency_id' => $invoice->currency_id,
-            'sales_tax_type' => $invoice->sales_tax_type,
-            'sales_tax_address_type' => $invoice->sales_tax_address_type,
+            ...$carriedOver,
         ]);
 
         $creditNote->unique_hash = Hashids::connection(HashidConnection::Invoice->value)->encode($creditNote->id);

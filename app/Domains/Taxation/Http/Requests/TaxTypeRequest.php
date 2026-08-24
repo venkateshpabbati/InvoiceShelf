@@ -7,10 +7,19 @@ use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Validator;
 
+/**
+ * Incoming payload for creating or editing a hand-maintained tax type.
+ *
+ * Beyond the field rules it does two things: it decides whether the compound
+ * flag is allowed by looking at the values the row will *end up* with — the
+ * submitted ones, falling back to what is stored when an edit stays silent
+ * about a field — and it produces the attribute array to persist, pinned to
+ * the GENERAL kind and to the company the request was addressed to.
+ */
 class TaxTypeRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * Access is settled by the tax-type policy in the controller.
      */
     public function authorize(): bool
     {
@@ -18,16 +27,24 @@ class TaxTypeRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * @return array<string, mixed>
      */
     public function rules(): array
     {
-        $rules = [
+        $name = Rule::unique('tax_types')
+            ->where('type', TaxType::TYPE_GENERAL)
+            ->where('company_id', $this->header('company'));
+
+        // Quirk kept as is: only PUT excuses the edited row from the name
+        // check. A PATCH would collide with its own stored name.
+        if ($this->isMethod('PUT')) {
+            $name->ignore($this->route('tax_type')->id);
+        }
+
+        return [
             'name' => [
                 'required',
-                Rule::unique('tax_types')
-                    ->where('type', TaxType::TYPE_GENERAL)
-                    ->where('company_id', $this->header('company')),
+                $name,
             ],
             'calculation_type' => [
                 'required',
@@ -59,31 +76,26 @@ class TaxTypeRequest extends FormRequest
                 ]),
             ],
         ];
-
-        if ($this->isMethod('PUT')) {
-            $rules['name'] = [
-                'required',
-                Rule::unique('tax_types')
-                    ->ignore($this->route('tax_type')->id)
-                    ->where('type', TaxType::TYPE_GENERAL)
-                    ->where('company_id', $this->header('company')),
-            ];
-        }
-
-        return $rules;
     }
 
+    /**
+     * Compounding is reserved for percentage taxes on the sales side.
+     *
+     * The check is skipped while any other rule has already failed, so a
+     * request with, say, a bad calculation type reports that alone.
+     */
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator): void {
-            if ($validator->errors()->isNotEmpty() || ! $this->effectiveCompoundTax()) {
+            if ($validator->errors()->isNotEmpty() || ! $this->compoundFlag()) {
                 return;
             }
 
-            if (
-                $this->effectiveCalculationType() !== 'percentage'
-                || $this->effectiveTransactionType() !== TaxType::TRANSACTION_TYPE_SALES
-            ) {
+            $allowed = $this->settledValue('calculation_type', 'percentage') === 'percentage'
+                && $this->settledValue('transaction_type', TaxType::TRANSACTION_TYPE_SALES)
+                    === TaxType::TRANSACTION_TYPE_SALES;
+
+            if (! $allowed) {
                 $validator->errors()->add(
                     'compound_tax',
                     'Compound tax is only available for percentage sales taxes.'
@@ -92,58 +104,63 @@ class TaxTypeRequest extends FormRequest
         });
     }
 
+    /**
+     * Attributes to write, with the gaps a legacy client leaves filled in.
+     */
     public function getTaxTypePayload()
     {
-        $payload = collect($this->validated());
+        $payload = $this->validated();
 
-        if (! $payload->has('transaction_type')) {
-            $payload->put(
-                'transaction_type',
-                ($this->isMethod('PUT') || $this->isMethod('PATCH'))
-                    ? $this->route('tax_type')->transaction_type
-                    : TaxType::TRANSACTION_TYPE_SALES
-            );
+        if (! array_key_exists('transaction_type', $payload)) {
+            $payload['transaction_type'] = $this->isEdit()
+                ? $this->storedValue('transaction_type')
+                : TaxType::TRANSACTION_TYPE_SALES;
         }
 
-        if (! $payload->has('compound_tax') && ! ($this->isMethod('PUT') || $this->isMethod('PATCH'))) {
-            $payload->put('compound_tax', false);
+        // An edit that omits the flag keeps whatever the row already holds;
+        // a create that omits it is plainly not compound.
+        if (! $this->isEdit() && ! array_key_exists('compound_tax', $payload)) {
+            $payload['compound_tax'] = false;
         }
 
-        return $payload
-            ->merge([
-                'company_id' => $this->header('company'),
-                'type' => TaxType::TYPE_GENERAL,
-            ])
-            ->toArray();
+        $payload['company_id'] = $this->header('company');
+        $payload['type'] = TaxType::TYPE_GENERAL;
+
+        return $payload;
     }
 
-    private function effectiveCompoundTax(): bool
+    /**
+     * Whether the row will carry the compound flag once written.
+     */
+    private function compoundFlag(): bool
     {
         if ($this->has('compound_tax')) {
             return $this->boolean('compound_tax');
         }
 
-        return $this->isMethod('PUT') || $this->isMethod('PATCH')
-            ? $this->route('tax_type')->compound_tax
-            : false;
+        return $this->isEdit() ? $this->storedValue('compound_tax') : false;
     }
 
-    private function effectiveCalculationType(): string
+    /**
+     * The value a field will hold after the write: what was sent, else the
+     * stored value on an edit, else the create-time default.
+     */
+    private function settledValue(string $field, string $default): ?string
     {
-        if ($this->has('calculation_type')) {
-            return $this->input('calculation_type');
+        if ($this->has($field)) {
+            return $this->input($field);
         }
 
-        return $this->isMethod('PUT') || $this->isMethod('PATCH')
-            ? $this->route('tax_type')->calculation_type
-            : 'percentage';
+        return $this->isEdit() ? $this->storedValue($field) : $default;
     }
 
-    private function effectiveTransactionType(): string
+    private function storedValue(string $field)
     {
-        return $this->input('transaction_type')
-            ?? ($this->isMethod('PUT') || $this->isMethod('PATCH')
-                ? $this->route('tax_type')->transaction_type
-                : TaxType::TRANSACTION_TYPE_SALES);
+        return $this->route('tax_type')->{$field};
+    }
+
+    private function isEdit(): bool
+    {
+        return $this->isMethod('PUT') || $this->isMethod('PATCH');
     }
 }

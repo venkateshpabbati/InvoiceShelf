@@ -10,18 +10,14 @@ use Symfony\Component\Mailer\Bridge\Postmark\Transport\PostmarkTransportFactory;
 use function Pest\Laravel\getJson;
 use function Pest\Laravel\postJson;
 
-beforeEach(function () {
-    Artisan::call('db:seed', ['--class' => 'DatabaseSeeder', '--force' => true]);
-    Artisan::call('db:seed', ['--class' => 'DemoSeeder', '--force' => true]);
+beforeEach(function (): void {
+    Artisan::call('db:seed', ['--force' => true, '--class' => 'DatabaseSeeder']);
+    Artisan::call('db:seed', ['--force' => true, '--class' => 'DemoSeeder']);
 
-    $user = User::find(1);
-    $this->withHeaders([
-        'company' => $user->companies()->first()->id,
-    ]);
-    Sanctum::actingAs(
-        $user,
-        ['*']
-    );
+    $user = User::query()->find(1);
+    $companyId = $user->companies()->first()->getKey();
+    $this->withHeaders(['company' => $companyId]);
+    Sanctum::actingAs($user, ['*']);
 });
 
 test('company settings config uses canonical v2 links', function () {

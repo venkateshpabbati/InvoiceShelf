@@ -74,9 +74,9 @@ class ModulesController extends Controller
         $installedModule->enable();
         $module->refresh();
 
-        ModuleEnabledEvent::dispatch($module);
+        event(new ModuleEnabledEvent($module));
 
-        return response()->json(['success' => true]);
+        return new JsonResponse(['success' => true]);
     }
 
     public function disable(string $module, DatabaseActivator $activator): JsonResponse

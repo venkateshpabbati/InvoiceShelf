@@ -6,6 +6,13 @@ use App\Domains\Money\Http\Resources\CurrencyResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
+/**
+ * Admin payload for a tax applied to a document.
+ *
+ * Alongside the snapshotted figures it reports every owner id -- consumers
+ * decide which one is populated -- and `type`, the kind of the originating tax
+ * type, which is read straight off the relation.
+ */
 class TaxResource extends JsonResource
 {
     /**
@@ -33,14 +40,18 @@ class TaxResource extends JsonResource
             'compound_tax' => $this->compound_tax,
             'base_amount' => $this->base_amount,
             'currency_id' => $this->currency_id,
+            // Dereferenced without a guard: a tax type with rows attached
+            // cannot be deleted, so the parent is always there.
             'type' => $this->taxType->type,
             'recurring_invoice_id' => $this->recurring_invoice_id,
-            'tax_type' => $this->when($this->taxType()->exists(), function () {
-                return new TaxTypeResource($this->taxType);
-            }),
-            'currency' => $this->when($this->currency()->exists(), function () {
-                return new CurrencyResource($this->currency);
-            }),
+            'tax_type' => $this->when(
+                $this->taxType()->exists(),
+                fn () => new TaxTypeResource($this->taxType)
+            ),
+            'currency' => $this->when(
+                $this->currency()->exists(),
+                fn () => new CurrencyResource($this->currency)
+            ),
         ];
     }
 }

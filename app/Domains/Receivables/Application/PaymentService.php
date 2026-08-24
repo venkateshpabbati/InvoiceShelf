@@ -175,19 +175,19 @@ class PaymentService implements PaymentPdfDataProvider
         $payment->loadMissing('allocations.invoice.currency');
 
         $company = Company::find($payment->company_id);
-        $locale = CompanySetting::getSetting('language', $company->id);
 
-        \App::setLocale($locale);
+        // Render in the company's configured language, not the requester's.
+        \App::setLocale(CompanySetting::getSetting('language', $company->id));
 
         $logo = $company->logo_path;
-
-        view()->share([
+        $shared = [
             'payment' => $payment,
             'company_address' => $payment->getCompanyAddress(),
             'billing_address' => $payment->getCustomerBillingAddress(),
             'notes' => $payment->getNotes(),
             'logo' => $logo ?? null,
-        ]);
+        ];
+        view()->share($shared);
 
         $templatePath = PdfTemplateUtils::resolveView('payment', 'payment');
 

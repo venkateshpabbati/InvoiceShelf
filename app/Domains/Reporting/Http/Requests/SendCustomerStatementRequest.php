@@ -10,7 +10,9 @@ use Illuminate\Validation\Rule;
 class SendCustomerStatementRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * Left open deliberately. Whether this caller may see the account at
+     * all is settled by the controller, ahead of the statement being
+     * built; the shape of the payload is all that is settled here.
      */
     public function authorize(): bool
     {
@@ -18,7 +20,7 @@ class SendCustomerStatementRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * The statement to draw up, together with the message it travels in.
      *
      * @return array<string, mixed>
      */

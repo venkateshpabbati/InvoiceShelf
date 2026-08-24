@@ -14,9 +14,17 @@ use App\Domains\Money\Models\ExchangeRateLog;
 use App\Domains\Money\Models\ExchangeRateProvider;
 use App\Platform\Http\Controller;
 use Illuminate\Http\Request;
-use Illuminate\Http\Response;
-use Illuminate\Support\Arr;
+use Illuminate\Support\Collection;
 
+/**
+ * Exchange-rate providers plus everything that reads from them: which codes are
+ * already spoken for, what a service supports, the live rate for a document
+ * currency, and the one-shot historical backfill.
+ *
+ * Several lookups below query providers and documents across every company on
+ * purpose — that is the behaviour the API has always had and callers depend on
+ * it; the company scope is only applied where it already was.
+ */
 class ExchangeRateProviderController extends Controller
 {
     public function __construct(
@@ -24,54 +32,39 @@ class ExchangeRateProviderController extends Controller
         private readonly ExchangeRateBackfill $exchangeRateBackfill,
     ) {}
 
-    /**
-     * Display a listing of the resource.
-     *
-     * @return Response
-     */
     public function index(Request $request)
     {
         $this->authorize('viewAny', ExchangeRateProvider::class);
 
-        $limit = $request->has('limit') ? $request->limit : 5;
+        $providers = ExchangeRateProvider::whereCompany()->paginate($request->input('limit', 5));
 
-        $exchangeRateProviders = ExchangeRateProvider::whereCompany()->paginate($limit);
-
-        return ExchangeRateProviderResource::collection($exchangeRateProviders);
+        return ExchangeRateProviderResource::collection($providers);
     }
 
-    /**
-     * Store a newly created resource in storage.
-     *
-     * @param  Request  $request
-     * @return Response
-     */
     public function store(ExchangeRateProviderRequest $request)
     {
         $this->authorize('create', ExchangeRateProvider::class);
 
         $payload = $request->getExchangeRateProviderPayload();
-        $query = $this->exchangeRateProviderService->checkActiveCurrencies($payload['currencies'] ?? []);
 
-        if (count($query) !== 0) {
+        $taken = $this->exchangeRateProviderService->checkActiveCurrencies($payload['currencies'] ?? []);
+
+        if ($taken->isNotEmpty()) {
             return respondJson('currency_used', 'Currency used.');
         }
 
         try {
+            // The credentials are proven against the live service before a row exists.
             $this->exchangeRateProviderService->validateProvider($payload);
-            $exchangeRateProvider = $this->exchangeRateProviderService->create($payload);
 
-            return new ExchangeRateProviderResource($exchangeRateProvider);
+            return new ExchangeRateProviderResource(
+                $this->exchangeRateProviderService->create($payload),
+            );
         } catch (ExchangeRateException $exception) {
             return respondJson($exception->errorKey, $exception->getMessage());
         }
     }
 
-    /**
-     * Display the specified resource.
-     *
-     * @return Response
-     */
     public function show(ExchangeRateProvider $exchangeRateProvider)
     {
         $this->authorize('view', $exchangeRateProvider);
@@ -79,23 +72,18 @@ class ExchangeRateProviderController extends Controller
         return new ExchangeRateProviderResource($exchangeRateProvider);
     }
 
-    /**
-     * Update the specified resource in storage.
-     *
-     * @param  Request  $request
-     * @return Response
-     */
     public function update(ExchangeRateProviderRequest $request, ExchangeRateProvider $exchangeRateProvider)
     {
         $this->authorize('update', $exchangeRateProvider);
 
         $payload = $request->getExchangeRateProviderPayload();
-        $query = $this->exchangeRateProviderService->checkUpdateActiveCurrencies(
+
+        $taken = $this->exchangeRateProviderService->checkUpdateActiveCurrencies(
             $exchangeRateProvider,
             $payload['currencies'] ?? [],
         );
 
-        if (count($query) !== 0) {
+        if ($taken->isNotEmpty()) {
             return respondJson('currency_used', 'Currency used.');
         }
 
@@ -109,15 +97,11 @@ class ExchangeRateProviderController extends Controller
         }
     }
 
-    /**
-     * Remove the specified resource from storage.
-     *
-     * @return Response
-     */
     public function destroy(ExchangeRateProvider $exchangeRateProvider)
     {
         $this->authorize('delete', $exchangeRateProvider);
 
+        // Switching a provider off is a separate, deliberate step before removal.
         if ($exchangeRateProvider->active == true) {
             return respondJson('provider_active', 'Provider Active.');
         }
@@ -129,13 +113,53 @@ class ExchangeRateProviderController extends Controller
         ]);
     }
 
+    public function usedCurrencies(Request $request)
+    {
+        $this->authorize('viewAny', ExchangeRateProvider::class);
+
+        $exclude = $request->input('provider_id');
+
+        $active = ExchangeRateProvider::where('active', true)
+            ->whereCompany()
+            ->when($exclude, fn ($query) => $query->where('id', '<>', $exclude))
+            ->pluck('currencies');
+
+        $all = ExchangeRateProvider::whereCompany()->pluck('currencies');
+
+        return response()->json([
+            'allUsedCurrencies' => $this->collectCodes($all),
+            'activeUsedCurrencies' => $this->collectCodes($active),
+        ]);
+    }
+
+    public function supportedCurrencies(Request $request)
+    {
+        $this->authorize('viewAny', ExchangeRateProvider::class);
+
+        try {
+            $currencies = $this->exchangeRateProviderService->getSupportedCurrencies(
+                $request->input('driver'),
+                $request->input('key'),
+                $request->input('driver_config') ?? [],
+            );
+
+            return response()->json(['supportedCurrencies' => $currencies]);
+        } catch (ExchangeRateException $exception) {
+            return respondJson($exception->errorKey, $exception->getMessage());
+        }
+    }
+
+    /**
+     * Both outcomes are a 200 — the SPA switches on the body, not the status.
+     */
     public function activeProvider(Request $request, Currency $currency)
     {
-        $query = ExchangeRateProvider::whereCompany()->whereJsonContains('currencies', $currency->code)
+        $covered = ExchangeRateProvider::whereCompany()
             ->where('active', true)
-            ->get();
+            ->whereJsonContains('currencies', $currency->code)
+            ->exists();
 
-        if (count($query) !== 0) {
+        if ($covered) {
             return response()->json([
                 'success' => true,
                 'message' => 'provider_active',
@@ -147,41 +171,30 @@ class ExchangeRateProviderController extends Controller
         ], 200);
     }
 
+    /**
+     * Rate from the given currency to the company's base currency: live when a
+     * provider covers it, otherwise the newest logged rate, otherwise nothing.
+     */
     public function getRate(Request $request, Currency $currency)
     {
-        $settings = CompanySetting::getSettings(['currency'], $request->header('company'));
-        $baseCurrency = Currency::findOrFail($settings['currency']);
+        $baseCurrency = $this->companyBaseCurrency($request);
 
-        $query = ExchangeRateProvider::whereJsonContains('currencies', $currency->code)
-            ->where('active', true)
-            ->get()
-            ->toArray();
+        $live = $this->fetchLiveRate($currency, $baseCurrency);
 
-        $exchangeRate = ExchangeRateLog::where('base_currency_id', $currency->id)
+        if ($live !== null) {
+            return response()->json(['exchangeRate' => $live]);
+        }
+
+        // Note the column naming: base_currency_id carries the document
+        // currency and currency_id the company's base currency.
+        $logged = ExchangeRateLog::where('base_currency_id', $currency->id)
             ->where('currency_id', $baseCurrency->id)
-            ->orderBy('created_at', 'desc')
+            ->latest()
             ->value('exchange_rate');
 
-        if ($query) {
-            $filter = Arr::only($query[0], ['key', 'driver', 'driver_config']);
-            try {
-                $exchangeRate = $this->exchangeRateProviderService->getExchangeRate(
-                    $filter['driver'],
-                    $filter['key'],
-                    $filter['driver_config'] ?? [],
-                    $currency->code,
-                    $baseCurrency->code,
-                );
-
-                return response()->json(['exchangeRate' => $exchangeRate]);
-            } catch (ExchangeRateException) {
-                // Fall back to the latest stored rate below, matching the
-                // existing API behavior when a live provider is unavailable.
-            }
-        }
-        if ($exchangeRate) {
+        if ($logged) {
             return response()->json([
-                'exchangeRate' => [$exchangeRate],
+                'exchangeRate' => [$logged],
             ], 200);
         }
 
@@ -190,85 +203,84 @@ class ExchangeRateProviderController extends Controller
         ], 200);
     }
 
-    public function supportedCurrencies(Request $request)
-    {
-        $this->authorize('viewAny', ExchangeRateProvider::class);
-
-        try {
-            $currencies = $this->exchangeRateProviderService->getSupportedCurrencies(
-                $request->driver,
-                $request->key,
-                $request->driver_config ?? [],
-            );
-
-            return response()->json(['supportedCurrencies' => $currencies]);
-        } catch (ExchangeRateException $exception) {
-            return respondJson($exception->errorKey, $exception->getMessage());
-        }
-    }
-
-    public function usedCurrencies(Request $request)
-    {
-        $this->authorize('viewAny', ExchangeRateProvider::class);
-
-        $providerId = $request->provider_id;
-
-        $activeExchangeRateProviders = ExchangeRateProvider::where('active', true)
-            ->whereCompany()
-            ->when($providerId, function ($query) use ($providerId) {
-                return $query->where('id', '<>', $providerId);
-            })
-            ->pluck('currencies');
-        $activeExchangeRateProvider = [];
-
-        foreach ($activeExchangeRateProviders as $data) {
-            if (is_array($data)) {
-                for ($limit = 0; $limit < count($data); $limit++) {
-                    $activeExchangeRateProvider[] = $data[$limit];
-                }
-            }
-        }
-
-        $allExchangeRateProviders = ExchangeRateProvider::whereCompany()->pluck('currencies');
-        $allExchangeRateProvider = [];
-
-        foreach ($allExchangeRateProviders as $data) {
-            if (is_array($data)) {
-                for ($limit = 0; $limit < count($data); $limit++) {
-                    $allExchangeRateProvider[] = $data[$limit];
-                }
-            }
-        }
-
-        return response()->json([
-            'allUsedCurrencies' => $allExchangeRateProvider ? $allExchangeRateProvider : [],
-            'activeUsedCurrencies' => $activeExchangeRateProvider ? $activeExchangeRateProvider : [],
-        ]);
-    }
-
     public function usedCurrenciesWithoutRate(Request $request)
     {
+        $ids = $this->exchangeRateBackfill->currencyIdsMissingRates();
+
         return response()->json([
-            'currencies' => Currency::whereIn(
-                'id',
-                $this->exchangeRateBackfill->currencyIdsMissingRates(),
-            )->get(),
+            'currencies' => Currency::whereIn('id', $ids)->get(),
         ]);
     }
 
     public function bulkUpdate(BulkExchangeRateRequest $request)
     {
-        if ($this->exchangeRateBackfill->apply(
+        $applied = $this->exchangeRateBackfill->apply(
             (int) $request->header('company'),
             $request->validated('currencies'),
-        )) {
+        );
+
+        if ($applied) {
             return response()->json([
                 'success' => true,
             ]);
         }
 
+        // The backfill has already run for this company; nothing was touched.
         return response()->json([
             'error' => false,
         ]);
+    }
+
+    /**
+     * Currency codes of every provider in the given set, one entry per provider
+     * that covers a code — repeats are meaningful and stay in.
+     *
+     * @param  Collection<int, mixed>  $providerCurrencies
+     * @return array<int, mixed>
+     */
+    private function collectCodes(Collection $providerCurrencies): array
+    {
+        return $providerCurrencies
+            ->filter(fn ($codes): bool => is_array($codes))
+            ->flatten(1)
+            ->values()
+            ->all();
+    }
+
+    private function companyBaseCurrency(Request $request): Currency
+    {
+        $settings = CompanySetting::getSettings(['currency'], $request->header('company'));
+
+        return Currency::findOrFail($settings['currency']);
+    }
+
+    /**
+     * Ask the first active provider covering the code — any company's, by
+     * long-standing design. An unreachable or misconfigured service is not an
+     * error here; the caller falls back to the rate log.
+     *
+     * @return array<int, mixed>|null
+     */
+    private function fetchLiveRate(Currency $currency, Currency $baseCurrency): ?array
+    {
+        $provider = ExchangeRateProvider::whereJsonContains('currencies', $currency->code)
+            ->where('active', true)
+            ->first();
+
+        if (! $provider) {
+            return null;
+        }
+
+        try {
+            return $this->exchangeRateProviderService->getExchangeRate(
+                $provider->driver,
+                $provider->key,
+                $provider->driver_config ?? [],
+                $currency->code,
+                $baseCurrency->code,
+            );
+        } catch (ExchangeRateException) {
+            return null;
+        }
     }
 }

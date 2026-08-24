@@ -5,24 +5,32 @@ namespace App\Domains\Purchases\Http\Requests;
 use App\Domains\Accounts\Models\CompanySetting;
 use App\Domains\Taxation\Models\TaxType;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Arr;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Validator;
 
 class ExpenseRequest extends FormRequest
 {
+    /**
+     * Multipart clients send the tax rows as a JSON string; unpack them before validating.
+     */
     protected function prepareForValidation(): void
     {
-        if (is_string($this->input('taxes'))) {
-            $taxes = json_decode($this->input('taxes'), true);
+        $submittedTaxes = $this->input('taxes');
 
-            $this->merge([
-                'taxes' => json_last_error() === JSON_ERROR_NONE ? $taxes : null,
-            ]);
+        if (! is_string($submittedTaxes)) {
+            return;
         }
+
+        $decoded = json_decode($submittedTaxes, true);
+
+        $this->merge([
+            'taxes' => json_last_error() === JSON_ERROR_NONE ? $decoded : null,
+        ]);
     }
 
     /**
-     * Determine if the user is authorized to make this request.
+     * Gatekeeping happens in the controller, so let every caller through here.
      */
     public function authorize(): bool
     {
@@ -30,58 +38,28 @@ class ExpenseRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * Rules for creating or editing an expense.
      */
     public function rules(): array
     {
-        $companyCurrency = CompanySetting::getSetting('currency', $this->header('company'));
-
         $rules = [
-            'expense_date' => [
-                'required',
-            ],
-            'expense_number' => [
-                'nullable',
-                'string',
-                'max:255',
-            ],
-            'expense_category_id' => [
-                'required',
-            ],
-            'exchange_rate' => [
-                'nullable',
-            ],
-            'payment_method_id' => [
-                'nullable',
-            ],
-            'amount' => [
-                'required',
-                'integer',
-                'min:0',
-            ],
-            'customer_id' => [
-                'nullable',
-            ],
-            'notes' => [
-                'nullable',
-            ],
-            'currency_id' => [
-                'required',
-            ],
+            'expense_date' => ['required'],
+            'expense_number' => ['nullable', 'string', 'max:255'],
+            'expense_category_id' => ['required'],
+            'exchange_rate' => ['nullable'],
+            'payment_method_id' => ['nullable'],
+            'amount' => ['required', 'integer', 'min:0'],
+            'customer_id' => ['nullable'],
+            'notes' => ['nullable'],
+            'currency_id' => ['required'],
             'attachment_receipt' => [
                 'nullable',
                 'file',
                 'mimes:jpg,png,pdf,doc,docx,xls,xlsx,ppt,pptx',
                 'max:20000',
             ],
-            'taxes' => [
-                'sometimes',
-                'array',
-            ],
-            'taxes.*' => [
-                'required',
-                'array:tax_type_id,amount',
-            ],
+            'taxes' => ['sometimes', 'array'],
+            'taxes.*' => ['required', 'array:tax_type_id,amount'],
             'taxes.*.tax_type_id' => [
                 'required',
                 'integer',
@@ -91,38 +69,39 @@ class ExpenseRequest extends FormRequest
                     ->where('type', TaxType::TYPE_GENERAL)
                     ->where('transaction_type', TaxType::TRANSACTION_TYPE_PURCHASES),
             ],
-            'taxes.*.amount' => [
-                'required',
-                'integer',
-                'min:0',
-            ],
+            'taxes.*.amount' => ['required', 'integer', 'min:0'],
         ];
 
-        if ($companyCurrency && $this->currency_id) {
-            if ($companyCurrency !== $this->currency_id) {
-                $rules['exchange_rate'] = [
-                    'required',
-                ];
-            }
+        $homeCurrency = CompanySetting::getSetting('currency', $this->header('company'));
+
+        if ($homeCurrency && $this->currency_id && $homeCurrency !== $this->currency_id) {
+            $rules['exchange_rate'] = ['required'];
         }
 
         return $rules;
     }
 
+    /**
+     * The tax rows may never add up to more than the expense itself.
+     */
     public function withValidator(Validator $validator): void
     {
         $validator->after(function (Validator $validator): void {
             $taxes = $this->input('taxes');
 
-            if (! is_array($taxes) || $validator->errors()->has('taxes') || $validator->errors()->has('taxes.*')) {
+            if (! is_array($taxes)) {
                 return;
             }
 
-            $totalTaxAmount = collect($taxes)->sum(
-                fn (mixed $tax): int => is_array($tax) ? (int) ($tax['amount'] ?? 0) : 0
+            if ($validator->errors()->has('taxes') || $validator->errors()->has('taxes.*')) {
+                return;
+            }
+
+            $taxed = collect($taxes)->sum(
+                fn (mixed $row): int => is_array($row) ? (int) ($row['amount'] ?? 0) : 0
             );
 
-            if ($totalTaxAmount > (int) $this->input('amount')) {
+            if ($taxed > (int) $this->input('amount')) {
                 $validator->errors()->add('taxes', 'The total tax amount may not exceed the expense amount.');
             }
         });
@@ -130,19 +109,16 @@ class ExpenseRequest extends FormRequest
 
     public function getExpensePayload()
     {
-        $company_currency = CompanySetting::getSetting('currency', $this->header('company'));
-        $current_currency = $this->currency_id;
-        $exchange_rate = $company_currency != $current_currency ? $this->exchange_rate : 1;
+        $homeCurrency = CompanySetting::getSetting('currency', $this->header('company'));
+        $chosenCurrency = $this->currency_id;
+        $rate = $homeCurrency != $chosenCurrency ? $this->exchange_rate : 1;
 
-        return collect($this->validated())
-            ->except('taxes')
-            ->merge([
-                'creator_id' => $this->user()->id,
-                'company_id' => $this->header('company'),
-                'exchange_rate' => $exchange_rate,
-                'base_amount' => $this->amount * $exchange_rate,
-                'currency_id' => $current_currency,
-            ])
-            ->toArray();
+        return array_merge(Arr::except($this->validated(), 'taxes'), [
+            'creator_id' => $this->user()->id,
+            'company_id' => $this->header('company'),
+            'exchange_rate' => $rate,
+            'base_amount' => $this->amount * $rate,
+            'currency_id' => $chosenCurrency,
+        ]);
     }
 }

@@ -8,11 +8,16 @@ use App\Domains\Money\Http\Resources\CustomerPortal\CurrencyResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
+/**
+ * The signed-in contact as the customer portal publishes it.
+ *
+ * A narrower view than the admin one: no password flag and no account summary
+ * figures, only the profile fields the portal itself renders, together with the
+ * addresses, custom field values, company and currency when those exist.
+ */
 class CustomerResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
-     *
      * @param  Request  $request
      */
     public function toArray($request): array
@@ -35,21 +40,26 @@ class CustomerResource extends JsonResource
             'avatar' => $this->avatar,
             'prefix' => $this->prefix,
             'tax_id' => $this->tax_id,
-            'billing' => $this->when($this->billingAddress()->exists(), function () {
-                return new AddressResource($this->billingAddress);
-            }),
-            'shipping' => $this->when($this->shippingAddress()->exists(), function () {
-                return new AddressResource($this->shippingAddress);
-            }),
-            'fields' => $this->when($this->fields()->exists(), function () {
-                return CustomFieldValueResource::collection($this->fields);
-            }),
-            'company' => $this->when($this->company()->exists(), function () {
-                return new CompanyResource($this->company);
-            }),
-            'currency' => $this->when($this->currency()->exists(), function () {
-                return new CurrencyResource($this->currency);
-            }),
+            'billing' => $this->when(
+                $this->billingAddress()->exists(),
+                fn () => new AddressResource($this->billingAddress)
+            ),
+            'shipping' => $this->when(
+                $this->shippingAddress()->exists(),
+                fn () => new AddressResource($this->shippingAddress)
+            ),
+            'fields' => $this->when(
+                $this->fields()->exists(),
+                fn () => CustomFieldValueResource::collection($this->fields)
+            ),
+            'company' => $this->when(
+                $this->company()->exists(),
+                fn () => new CompanyResource($this->company)
+            ),
+            'currency' => $this->when(
+                $this->currency()->exists(),
+                fn () => new CurrencyResource($this->currency)
+            ),
         ];
     }
 }

@@ -6,19 +6,21 @@ use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
+/**
+ * Announces that a module has been switched on for this installation.
+ */
 class ModuleEnabledEvent
 {
     use Dispatchable;
     use InteractsWithSockets;
     use SerializesModels;
 
+    /**
+     * Subject of the announcement. Deliberately untyped: the property and the
+     * constructor parameter are a published contract for module listeners.
+     */
     public $module;
 
-    /**
-     * Create a new event instance.
-     *
-     * @return void
-     */
     public function __construct($module)
     {
         $this->module = $module;

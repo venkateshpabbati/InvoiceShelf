@@ -22,34 +22,33 @@ class ExpensesController extends Controller
     ) {}
 
     /**
-     * Display a listing of the resource.
-     *
-     * @return JsonResponse
+     * Filtered, paginated expense list for the active company.
      */
     public function index(Request $request)
     {
         $this->authorize('viewAny', Expense::class);
 
-        $limit = $request->has('limit') ? $request->limit : 10;
+        $filters = $request->all();
+        $columns = ['expenses.*', 'expense_categories.name', 'customers.name as user_name'];
 
-        $expenses = Expense::with('category', 'creator', 'fields')
+        $expenses = Expense::query()
+            ->with(['category', 'creator', 'fields'])
             ->whereCompany()
-            ->leftJoin('customers', 'customers.id', '=', 'expenses.customer_id')
-            ->join('expense_categories', 'expense_categories.id', '=', 'expenses.expense_category_id')
-            ->applyFilters($request->all())
-            ->select('expenses.*', 'expense_categories.name', 'customers.name as user_name')
-            ->paginateData($limit);
+            ->leftJoin('customers', 'expenses.customer_id', '=', 'customers.id')
+            ->join('expense_categories', 'expenses.expense_category_id', '=', 'expense_categories.id')
+            ->applyFilters($filters)
+            ->select($columns)
+            ->paginateData($request->input('limit', 10));
 
-        return ExpenseResource::collection($expenses)
-            ->additional(['meta' => [
-                'expense_total_count' => Expense::whereCompany()->count(),
-            ]]);
+        $total = Expense::whereCompany()->count();
+
+        return ExpenseResource::collection($expenses)->additional([
+            'meta' => ['expense_total_count' => $total],
+        ]);
     }
 
     /**
-     * Store a newly created resource in storage.
-     *
-     * @return JsonResponse
+     * Record a new expense, with its optional taxes, receipt and custom fields.
      */
     public function store(ExpenseRequest $request)
     {
@@ -57,7 +56,7 @@ class ExpensesController extends Controller
 
         $expense = $this->expenseService->create(
             attributes: $request->getExpensePayload(),
-            taxes: $request->has('taxes') ? $request->input('taxes') : null,
+            taxes: $request->input('taxes'),
             receipt: $this->receipt($request),
             customFields: $this->customFields($request),
         );
@@ -66,9 +65,7 @@ class ExpensesController extends Controller
     }
 
     /**
-     * Display the specified resource.
-     *
-     * @return JsonResponse
+     * Return a single expense together with its applied taxes.
      */
     public function show(Expense $expense)
     {
@@ -80,9 +77,7 @@ class ExpensesController extends Controller
     }
 
     /**
-     * Update the specified resource in storage.
-     *
-     * @return JsonResponse
+     * Apply the submitted changes to an existing expense.
      */
     public function update(ExpenseRequest $request, Expense $expense)
     {
@@ -91,110 +86,114 @@ class ExpensesController extends Controller
         $expense = $this->expenseService->update(
             expense: $expense,
             attributes: $request->getExpensePayload(),
-            taxes: $request->has('taxes') ? $request->input('taxes') : null,
+            taxes: $request->input('taxes'),
             receipt: $this->receipt($request),
-            removeReceipt: (bool) $request->input('is_attachment_receipt_removed', false),
+            removeReceipt: (bool) $request->input('is_attachment_receipt_removed'),
             customFields: $this->customFields($request),
         );
 
         return new ExpenseResource($expense);
     }
 
+    /**
+     * Drop every submitted expense that belongs to the active company.
+     *
+     * @return JsonResponse
+     */
     public function delete(DeleteExpensesRequest $request)
     {
         $this->authorize('delete multiple expenses');
 
-        $ids = Expense::whereCompany()
-            ->whereIn('id', $request->ids)
-            ->pluck('id');
+        $deletable = Expense::whereCompany()->whereIn('id', $request->ids)->pluck('id');
 
-        Expense::destroy($ids);
+        Expense::destroy($deletable);
 
-        return response()->json([
-            'success' => true,
-        ]);
+        return response()->json(['success' => true]);
     }
 
+    /**
+     * Stream the stored receipt inline, if the expense has one.
+     */
     public function showReceipt(Expense $expense)
     {
         $this->authorize('view', $expense);
 
         $receipt = $this->expenseReceiptManager->first($expense);
 
-        if ($receipt) {
-            return response()->file($receipt->path);
+        if (! $receipt) {
+            return respondJson('receipt_does_not_exist', 'Receipt does not exist.');
         }
 
-        return respondJson('receipt_does_not_exist', 'Receipt does not exist.');
+        return response()->file($receipt->path);
     }
 
+    /**
+     * Store a base64 encoded receipt sent as a JSON blob.
+     *
+     * @return JsonResponse
+     */
     public function uploadReceipt(UploadExpenseReceiptRequest $request, Expense $expense)
     {
         $this->authorize('update', $expense);
 
-        $data = json_decode($request->attachment_receipt);
+        $payload = json_decode($request->attachment_receipt);
 
-        if ($data) {
+        if ($payload) {
             $this->expenseReceiptManager->attachBase64(
                 $expense,
-                $data->data,
-                $data->name,
+                $payload->data,
+                $payload->name,
                 $request->type === 'edit',
             );
         }
 
-        return response()->json([
-            'success' => 'Expense receipts uploaded successfully',
-        ], 200);
+        return response()->json(['success' => 'Expense receipts uploaded successfully'], 200);
     }
 
+    /**
+     * Send the stored receipt back as a file download.
+     */
     public function downloadReceipt(Expense $expense)
     {
         $this->authorize('view', $expense);
 
         $receipt = $this->expenseReceiptManager->first($expense);
 
-        if ($receipt) {
-            $response = response()->download($receipt->path, $receipt->fileName);
-            if (ob_get_contents()) {
-                ob_end_clean();
-            }
-
-            return $response;
+        if (! $receipt) {
+            return response()->json(['error' => 'receipt_not_found']);
         }
 
-        return response()->json([
-            'error' => 'receipt_not_found',
-        ]);
+        $download = response()->download($receipt->path, $receipt->fileName);
+
+        if (ob_get_contents()) {
+            ob_end_clean();
+        }
+
+        return $download;
     }
 
     /** @return array<int, mixed>|null */
     private function customFields(ExpenseRequest $request): ?array
     {
-        $customFields = $request->input('customFields');
+        $submitted = $request->input('customFields');
 
-        if (! $customFields) {
+        if (empty($submitted)) {
             return null;
         }
 
-        if (is_string($customFields)) {
-            $customFields = json_decode($customFields);
-        }
+        $values = is_string($submitted) ? json_decode($submitted) : $submitted;
 
-        return is_array($customFields) ? $customFields : null;
+        return is_array($values) ? $values : null;
     }
 
     private function receipt(ExpenseRequest $request): ?PendingExpenseReceipt
     {
-        $receipt = $request->file('attachment_receipt');
+        $upload = $request->file('attachment_receipt');
 
-        if (! $receipt) {
+        if (! $upload) {
             return null;
         }
 
-        return new PendingExpenseReceipt(
-            $receipt->getPathname(),
-            $receipt->getClientOriginalName(),
-        );
+        return new PendingExpenseReceipt($upload->getPathname(), $upload->getClientOriginalName());
     }
 }

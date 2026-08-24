@@ -8,9 +8,9 @@ use App\Domains\Taxation\Models\Tax;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schema;
 
-beforeEach(function () {
-    Artisan::call('db:seed', ['--class' => 'DatabaseSeeder', '--force' => true]);
-    Artisan::call('db:seed', ['--class' => 'DemoSeeder', '--force' => true]);
+beforeEach(function (): void {
+    Artisan::call('db:seed', ['--force' => true, '--class' => 'DatabaseSeeder']);
+    Artisan::call('db:seed', ['--force' => true, '--class' => 'DemoSeeder']);
 });
 
 /**

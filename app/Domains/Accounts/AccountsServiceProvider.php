@@ -46,11 +46,19 @@ class AccountsServiceProvider extends ServiceProvider
         Gate::policy(User::class, UserPolicy::class);
         Gate::policy(Role::class, RolePolicy::class);
 
-        Gate::define('create company', [CompanyPolicy::class, 'create']);
-        Gate::define('transfer company ownership', [CompanyPolicy::class, 'transferOwnership']);
-        Gate::define('delete company', [CompanyPolicy::class, 'delete']);
-        Gate::define('manage company', [SettingsPolicy::class, 'manageCompany']);
-        Gate::define('delete multiple users', [UserPolicy::class, 'deleteMultiple']);
-        Gate::define('owner only', [OwnerPolicy::class, 'managedByOwner']);
+        // Ability names the controllers authorize against, each one routed to
+        // the policy method that decides it. Registered in this order.
+        $gates = [
+            'create company' => [CompanyPolicy::class, 'create'],
+            'transfer company ownership' => [CompanyPolicy::class, 'transferOwnership'],
+            'delete company' => [CompanyPolicy::class, 'delete'],
+            'manage company' => [SettingsPolicy::class, 'manageCompany'],
+            'delete multiple users' => [UserPolicy::class, 'deleteMultiple'],
+            'owner only' => [OwnerPolicy::class, 'managedByOwner'],
+        ];
+
+        foreach ($gates as $ability => $handler) {
+            Gate::define($ability, $handler);
+        }
     }
 }

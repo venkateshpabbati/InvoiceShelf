@@ -15,41 +15,49 @@ use App\Platform\Http\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Mail\Markdown;
 
+/**
+ * Company-scoped estimate endpoints: listing, the write surface, bulk removal,
+ * mailing, and the two document conversions.
+ */
 class EstimatesController extends Controller
 {
-    public function __construct(
-        private readonly EstimateService $estimateService,
-    ) {}
+    public function __construct(private readonly EstimateService $estimateService) {}
 
+    /**
+     * Paginated estimates of the active company, joined to their customer so the
+     * list can be filtered and sorted by customer name.
+     */
     public function index(Request $request)
     {
         $this->authorize('viewAny', Estimate::class);
 
-        $limit = $request->has('limit') ? $request->limit : 10;
+        $filters = $request->all();
+        $perPage = $request->has('limit') ? $request->input('limit') : 10;
 
-        $estimates = Estimate::whereCompany()
-            ->join('customers', 'customers.id', '=', 'estimates.customer_id')
-            ->applyFilters($request->all())
-            ->select('estimates.*', 'customers.name')
-            ->latest()
-            ->paginateData($limit);
+        $page = Estimate::query()
+            ->whereCompany()
+            ->join('customers', fn ($join) => $join->on('customers.id', '=', 'estimates.customer_id'))
+            ->applyFilters($filters)
+            ->select(['estimates.*', 'customers.name'])
+            ->orderByDesc('created_at')
+            ->paginateData($perPage);
 
-        return EstimateResource::collection($estimates)
-            ->additional(['meta' => [
-                'estimate_total_count' => Estimate::whereCompany()->count(),
-            ]]);
+        return EstimateResource::collection($page)->additional([
+            'meta' => [
+                'estimate_total_count' => Estimate::query()->whereCompany()->count(),
+            ],
+        ]);
     }
 
+    /**
+     * Persist a new estimate, optionally mailing it straight away, and queue the
+     * PDF render.
+     */
     public function store(EstimatesRequest $request)
     {
         $this->authorize('create', Estimate::class);
 
-        $estimate = $this->estimateService->create(
-            attributes: $request->getEstimatePayload(),
-            items: $request->input('items'),
-            taxes: $request->has('taxes') ? $request->input('taxes') : null,
-            customFields: $this->customFields($request),
-        );
+        $estimate = $this->estimateService->create(...$this->writeArguments($request));
 
         if ($request->has('estimateSend')) {
             $this->estimateService->send($estimate, $request->only(['title', 'body']));
@@ -57,67 +65,70 @@ class EstimatesController extends Controller
 
         GenerateEstimatePdfJob::dispatch($estimate);
 
-        return new EstimateResource($estimate);
+        return EstimateResource::make($estimate);
     }
 
     public function show(Request $request, Estimate $estimate)
     {
         $this->authorize('view', $estimate);
 
-        return new EstimateResource($estimate);
+        return EstimateResource::make($estimate);
     }
 
+    /**
+     * Overwrite an estimate — lines and taxes are replaced wholesale — and
+     * re-render its PDF.
+     */
     public function update(EstimatesRequest $request, Estimate $estimate)
     {
         $this->authorize('update', $estimate);
 
-        $estimate = $this->estimateService->update(
-            estimate: $estimate,
-            attributes: $request->getEstimatePayload(),
-            items: $request->input('items'),
-            taxes: $request->has('taxes') ? $request->input('taxes') : null,
-            customFields: $this->customFields($request),
-        );
+        $estimate = $this->estimateService->update($estimate, ...$this->writeArguments($request));
 
         GenerateEstimatePdfJob::dispatch($estimate, true);
 
-        return new EstimateResource($estimate);
+        return EstimateResource::make($estimate);
     }
 
+    /**
+     * Bulk removal. Ids outside the active company are silently skipped.
+     */
     public function delete(DeleteEstimatesRequest $request)
     {
         $this->authorize('delete multiple estimates');
 
-        $ids = Estimate::whereCompany()
-            ->whereIn('id', $request->ids)
+        $ids = Estimate::query()
+            ->whereCompany()
+            ->whereIn('id', $request->input('ids'))
             ->pluck('id');
 
         Estimate::destroy($ids);
 
-        return response()->json([
-            'success' => true,
-        ]);
+        return response()->json(['success' => true]);
     }
 
     public function send(SendEstimatesRequest $request, Estimate $estimate)
     {
         $this->authorize('send estimate', $estimate);
 
-        $response = $this->estimateService->send($estimate, $request->all());
-
-        return response()->json($response);
+        return response()->json(
+            $this->estimateService->send($estimate, $request->all())
+        );
     }
 
+    /**
+     * Render the mail body the customer would receive, without sending it.
+     */
     public function sendPreview(SendEstimatesRequest $request, Estimate $estimate)
     {
         $this->authorize('send estimate', $estimate);
 
-        $markdown = new Markdown(view(), config('mail.markdown'));
-
         $data = $this->estimateService->sendEstimateData($estimate, $request->all());
         $data['url'] = $estimate->estimatePdfUrl;
 
-        return $markdown->render('emails.send.estimate', ['data' => $data]);
+        $renderer = new Markdown(view(), config('mail.markdown'));
+
+        return $renderer->render('emails.send.estimate', ['data' => $data]);
     }
 
     public function clone(Request $request, Estimate $estimate)
@@ -125,38 +136,44 @@ class EstimatesController extends Controller
         $this->authorize('view', $estimate);
         $this->authorize('create', Estimate::class);
 
-        $newEstimate = $this->estimateService->clone($estimate);
-
-        return new EstimateResource($newEstimate);
+        return EstimateResource::make($this->estimateService->clone($estimate));
     }
 
+    /**
+     * Reading the source estimate is checked on top of the invoice-create
+     * ability so the conversion cannot reach across companies.
+     */
     public function convertToInvoice(Request $request, Estimate $estimate)
     {
-        // Authorize access to the source estimate (tenant isolation) in addition
-        // to the ability to create an invoice.
         $this->authorize('view', $estimate);
         $this->authorize('create', Invoice::class);
 
-        $invoice = $this->estimateService->convertToInvoice($estimate);
-
-        return new InvoiceResource($invoice);
+        return InvoiceResource::make($this->estimateService->convertToInvoice($estimate));
     }
 
     public function changeStatus(Request $request, Estimate $estimate)
     {
         $this->authorize('send estimate', $estimate);
 
-        $this->estimateService->changeStatus($estimate, $request->status);
+        $this->estimateService->changeStatus($estimate, $request->input('status'));
 
-        return response()->json([
-            'success' => true,
-        ]);
+        return response()->json(['success' => true]);
     }
 
-    private function customFields(EstimatesRequest $request): ?iterable
+    /**
+     * The arguments create() and update() share, keyed by parameter name.
+     *
+     * @return array<string, mixed>
+     */
+    private function writeArguments(EstimatesRequest $request): array
     {
-        $customFields = $request->input('customFields');
+        $fields = $request->input('customFields');
 
-        return is_iterable($customFields) ? $customFields : null;
+        return [
+            'attributes' => $request->getEstimatePayload(),
+            'items' => $request->input('items'),
+            'taxes' => $request->has('taxes') ? $request->input('taxes') : null,
+            'customFields' => is_iterable($fields) ? $fields : null,
+        ];
     }
 }

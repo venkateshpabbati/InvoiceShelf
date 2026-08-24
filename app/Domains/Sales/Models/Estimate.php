@@ -25,10 +25,22 @@ use Illuminate\Support\Str;
 use Spatie\MediaLibrary\HasMedia;
 use Spatie\MediaLibrary\InteractsWithMedia;
 
+/**
+ * An offer made to a customer, convertible into an invoice.
+ *
+ * The record is a snapshot: it keeps its own copy of the amounts, the line
+ * items and the taxes, so later edits to the catalog or to a tax type leave
+ * already-issued offers untouched. It renders to a PDF and can be mailed, which
+ * is why it carries the PDF concern and a media collection. The lifecycle runs
+ * DRAFT to SENT to VIEWED, with ACCEPTED, REJECTED and EXPIRED as terminals;
+ * the constants below are the whole vocabulary.
+ *
+ * Business logic lives in the Sales services — what is kept here is the shape
+ * of the record: relations, casts, query scopes and the strings the PDF and
+ * mail layers ask for.
+ */
 class Estimate extends Model implements HasMedia
 {
-    protected $table = 'estimates';
-
     use GeneratesPdf;
     use HasCustomFields;
     use HasFactory;
@@ -46,6 +58,22 @@ class Estimate extends Model implements HasMedia
 
     public const STATUS_REJECTED = 'REJECTED';
 
+    protected $table = 'estimates';
+
+    /**
+     * Everything but the primary key may be mass assigned.
+     *
+     * @var array
+     */
+    protected $guarded = [
+        'id',
+    ];
+
+    /**
+     * Columns holding a point in time.
+     *
+     * @var array
+     */
     protected $dates = [
         'created_at',
         'updated_at',
@@ -54,14 +82,23 @@ class Estimate extends Model implements HasMedia
         'expiry_date',
     ];
 
+    /**
+     * Computed attributes, listed in the order they are serialized.
+     *
+     * @var array
+     */
     protected $appends = [
         'formattedExpiryDate',
         'formattedEstimateDate',
         'estimatePdfUrl',
     ];
 
-    protected $guarded = ['id'];
-
+    /**
+     * Attribute casts.
+     *
+     * Money is held in integer minor units; the discount percentage and the
+     * exchange rate are the only fractional values on the record.
+     */
     protected function casts(): array
     {
         return [
@@ -74,270 +111,416 @@ class Estimate extends Model implements HasMedia
         ];
     }
 
-    public function getEstimatePdfUrlAttribute()
-    {
-        return url('/estimates/pdf/'.$this->unique_hash);
-    }
+    /*
+    |--------------------------------------------------------------------------
+    | Relationships
+    |--------------------------------------------------------------------------
+    */
 
-    public function emailLogs(): MorphMany
-    {
-        return $this->morphMany(EmailLog::class, 'mailable');
-    }
-
+    /**
+     * Line items making up the offer.
+     */
     public function items(): HasMany
     {
-        return $this->hasMany(EstimateItem::class);
+        return $this->hasMany(EstimateItem::class, 'estimate_id', 'id');
     }
 
-    public function customer(): BelongsTo
-    {
-        return $this->belongsTo(Customer::class, 'customer_id');
-    }
-
-    public function creator(): BelongsTo
-    {
-        return $this->belongsTo(User::class, 'creator_id');
-    }
-
-    public function company(): BelongsTo
-    {
-        return $this->belongsTo(Company::class);
-    }
-
-    public function currency(): BelongsTo
-    {
-        return $this->belongsTo(Currency::class);
-    }
-
+    /**
+     * Document-level tax rows, as opposed to the per-item ones hanging off the
+     * line items.
+     */
     public function taxes(): HasMany
     {
-        return $this->hasMany(Tax::class);
+        return $this->hasMany(Tax::class, 'estimate_id', 'id');
     }
 
+    /**
+     * Contact the offer was made to.
+     */
+    public function customer(): BelongsTo
+    {
+        return $this->belongsTo(Customer::class, 'customer_id', 'id');
+    }
+
+    /**
+     * Staff account that raised the offer.
+     */
+    public function creator(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'creator_id', 'id');
+    }
+
+    /**
+     * Company the offer was issued under.
+     */
+    public function company(): BelongsTo
+    {
+        return $this->belongsTo(Company::class, 'company_id', 'id');
+    }
+
+    /**
+     * Currency the stored amounts are denominated in.
+     */
+    public function currency(): BelongsTo
+    {
+        return $this->belongsTo(Currency::class, 'currency_id', 'id');
+    }
+
+    /**
+     * Mail sent out for this offer, recorded through the polymorphic log.
+     */
+    public function emailLogs(): MorphMany
+    {
+        return $this->morphMany(EmailLog::class, 'mailable', 'mailable_type', 'mailable_id', 'id');
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Accessors
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Shareable PDF address. Possession of the hash is the credential, so the
+     * link carries no company or customer context of its own.
+     */
+    public function getEstimatePdfUrlAttribute()
+    {
+        $path = '/estimates/pdf/'.$this->unique_hash;
+
+        return url($path);
+    }
+
+    /**
+     * Expiry written in the company's configured date format and in the
+     * language the application is running in.
+     *
+     * @param  mixed  $value
+     */
     public function getFormattedExpiryDateAttribute($value)
     {
-        $dateFormat = CompanySetting::getSetting('carbon_date_format', $this->company_id);
+        $format = CompanySetting::getSetting('carbon_date_format', $this->company_id);
 
-        return Carbon::parse($this->expiry_date)->translatedFormat($dateFormat);
+        return Carbon::parse($this->expiry_date)->translatedFormat($format);
     }
 
+    /**
+     * Issue date written the same way as the expiry above.
+     *
+     * @param  mixed  $value
+     */
     public function getFormattedEstimateDateAttribute($value)
     {
-        $dateFormat = CompanySetting::getSetting('carbon_date_format', $this->company_id);
+        $format = CompanySetting::getSetting('carbon_date_format', $this->company_id);
 
-        return Carbon::parse($this->estimate_date)->translatedFormat($dateFormat);
+        return Carbon::parse($this->estimate_date)->translatedFormat($format);
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Scopes
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Run every listed filter that carries a value.
+     *
+     * The order the filters are applied in is load-bearing: `estimate_id` is an
+     * OR (see whereEstimate), so it widens whatever has been narrowed down to
+     * that point and nothing added afterwards. Keep the sequence as it stands.
+     */
+    public function scopeApplyFilters($query, array $filters)
+    {
+        $scopes = [
+            'search' => 'whereSearch',
+            'estimate_number' => 'whereEstimateNumber',
+            'status' => 'whereStatus',
+            'estimate_id' => 'whereEstimate',
+        ];
+
+        foreach ($scopes as $filter => $scope) {
+            $value = $filters[$filter] ?? null;
+
+            if ($value) {
+                $query->{$scope}($value);
+            }
+        }
+
+        $from = $filters['from_date'] ?? null;
+        $to = $filters['to_date'] ?? null;
+
+        if ($from && $to) {
+            $query->estimatesBetween(
+                Carbon::createFromFormat('Y-m-d', $from),
+                Carbon::createFromFormat('Y-m-d', $to)
+            );
+        }
+
+        $contact = $filters['customer_id'] ?? null;
+
+        if ($contact) {
+            $query->whereCustomer($contact);
+        }
+
+        $sortField = $filters['orderByField'] ?? null;
+        $sortDirection = $filters['orderBy'] ?? null;
+
+        if ($sortField || $sortDirection) {
+            $query->whereOrder($sortField ?: 'sequence_number', $sortDirection ?: 'desc');
+        }
+    }
+
+    /**
+     * Restrict to offers issued inside the inclusive range.
+     */
     public function scopeEstimatesBetween($query, $start, $end)
     {
-        return $query->whereBetween(
-            'estimates.estimate_date',
-            [$start->format('Y-m-d'), $end->format('Y-m-d')]
-        );
+        $range = [$start->format('Y-m-d'), $end->format('Y-m-d')];
+
+        return $query->whereBetween($this->qualifyColumn('estimate_date'), $range);
     }
 
+    /**
+     * Exact match on the lifecycle status.
+     */
     public function scopeWhereStatus($query, $status)
     {
-        return $query->where('estimates.status', $status);
+        return $query->where($this->qualifyColumn('status'), $status);
     }
 
+    /**
+     * Partial match on the document number.
+     */
     public function scopeWhereEstimateNumber($query, $estimateNumber)
     {
-        return $query->where('estimates.estimate_number', 'LIKE', '%'.$estimateNumber.'%');
+        return $query->where($this->qualifyColumn('estimate_number'), 'LIKE', '%'.$estimateNumber.'%');
     }
 
+    /**
+     * Pull one specific offer back into the result set.
+     *
+     * This is an OR against an unqualified `id`, not a narrowing filter — it
+     * adds the row to whatever the other filters matched rather than
+     * intersecting with them. Preserved deliberately.
+     */
     public function scopeWhereEstimate($query, $estimate_id)
     {
-        $query->orWhere('id', $estimate_id);
+        return $query->orWhere('id', $estimate_id);
     }
 
+    /**
+     * Keep only offers whose customer matches every whitespace-separated term,
+     * a term counting as matched when it appears in the display name, the
+     * contact person or the company name.
+     */
     public function scopeWhereSearch($query, $search)
     {
-        foreach (explode(' ', $search) as $term) {
-            $query->whereHas('customer', function ($query) use ($term) {
-                $query->where('name', 'LIKE', '%'.$term.'%')
-                    ->orWhere('contact_name', 'LIKE', '%'.$term.'%')
-                    ->orWhere('company_name', 'LIKE', '%'.$term.'%');
+        $terms = explode(' ', $search);
+
+        foreach ($terms as $term) {
+            $needle = '%'.$term.'%';
+
+            $query->whereHas('customer', function ($contact) use ($needle) {
+                $contact->where('name', 'LIKE', $needle)
+                    ->orWhere('contact_name', 'LIKE', $needle)
+                    ->orWhere('company_name', 'LIKE', $needle);
             });
         }
     }
 
-    public function scopeApplyFilters($query, array $filters)
-    {
-        $filters = collect($filters);
-
-        if ($filters->get('search')) {
-            $query->whereSearch($filters->get('search'));
-        }
-
-        if ($filters->get('estimate_number')) {
-            $query->whereEstimateNumber($filters->get('estimate_number'));
-        }
-
-        if ($filters->get('status')) {
-            $query->whereStatus($filters->get('status'));
-        }
-
-        if ($filters->get('estimate_id')) {
-            $query->whereEstimate($filters->get('estimate_id'));
-        }
-
-        if ($filters->get('from_date') && $filters->get('to_date')) {
-            $start = Carbon::createFromFormat('Y-m-d', $filters->get('from_date'));
-            $end = Carbon::createFromFormat('Y-m-d', $filters->get('to_date'));
-            $query->estimatesBetween($start, $end);
-        }
-
-        if ($filters->get('customer_id')) {
-            $query->whereCustomer($filters->get('customer_id'));
-        }
-
-        if ($filters->get('orderByField') || $filters->get('orderBy')) {
-            $field = $filters->get('orderByField') ? $filters->get('orderByField') : 'sequence_number';
-            $orderBy = $filters->get('orderBy') ? $filters->get('orderBy') : 'desc';
-            $query->whereOrder($field, $orderBy);
-        }
-    }
-
+    /**
+     * Sort by a caller-supplied column, sanitised before it reaches SQL.
+     */
     public function scopeWhereOrder($query, $orderByField, $orderBy)
     {
-        SafeOrderBy::apply($query, $orderByField, $orderBy);
-    }
-
-    public function scopeWhereCompany($query)
-    {
-        $query->where('estimates.company_id', request()->header('company'));
-    }
-
-    public function scopeWhereCustomer($query, $customer_id)
-    {
-        $query->where('estimates.customer_id', $customer_id);
-    }
-
-    public function scopePaginateData($query, $limit)
-    {
-        if ($limit == 'all') {
-            return $query->get();
-        }
-
-        return $query->paginate($limit);
-    }
-
-    public function getPDFData(): mixed
-    {
-        return app(EstimatePdfDataProvider::class)->getPdfData($this);
-    }
-
-    public function getCompanyAddress(): string|false
-    {
-        if ($this->company && (! $this->company->address()->exists())) {
-            return false;
-        }
-
-        $format = CompanySetting::getSetting('estimate_company_address_format', $this->company_id);
-
-        return $this->getFormattedString($format);
-    }
-
-    public function getCustomerShippingAddress(): string|false
-    {
-        if ($this->customer && (! $this->customer->shippingAddress()->exists())) {
-            return false;
-        }
-
-        $format = CompanySetting::getSetting('estimate_shipping_address_format', $this->company_id);
-
-        return $this->getFormattedString($format);
-    }
-
-    public function getCustomerBillingAddress(): string|false
-    {
-        if ($this->customer && (! $this->customer->billingAddress()->exists())) {
-            return false;
-        }
-
-        $format = CompanySetting::getSetting('estimate_billing_address_format', $this->company_id);
-
-        return $this->getFormattedString($format);
-    }
-
-    public function getNotes(): string
-    {
-        return PdfHtmlSanitizer::sanitize($this->getFormattedString($this->notes));
-    }
-
-    public function getEmailAttachmentSetting(): bool
-    {
-        $estimateAsAttachment = CompanySetting::getSetting('estimate_email_attachment', $this->company_id);
-
-        if ($estimateAsAttachment == 'NO') {
-            return false;
-        }
-
-        return true;
-    }
-
-    public function getEmailBody(string $body): string
-    {
-        $values = array_merge($this->getFieldsArray(), $this->getExtraFields());
-
-        $body = strtr($body, $values);
-
-        return preg_replace('/{(.*?)}/', '', $body);
-    }
-
-    public function getExtraFields(): array
-    {
-        return [
-            '{ESTIMATE_DATE}' => $this->formattedEstimateDate,
-            '{ESTIMATE_EXPIRY_DATE}' => $this->formattedExpiryDate,
-            '{ESTIMATE_NUMBER}' => $this->estimate_number,
-            '{ESTIMATE_REF_NUMBER}' => $this->reference_number,
-        ];
+        return SafeOrderBy::apply($query, $orderByField, $orderBy);
     }
 
     /**
-     * Map the estimate's template name to the corresponding invoice template name.
+     * Narrow to the company the current request is acting on.
+     */
+    public function scopeWhereCompany($query)
+    {
+        $active = request()->header('company');
+
+        return $query->where($this->qualifyColumn('company_id'), $active);
+    }
+
+    /**
+     * Narrow to one contact's offers.
+     */
+    public function scopeWhereCustomer($query, $customer_id)
+    {
+        return $query->where($this->qualifyColumn('customer_id'), $customer_id);
+    }
+
+    /**
+     * Return the whole result set for the sentinel limit "all", otherwise a
+     * page of the requested size.
+     */
+    public function scopePaginateData($query, $limit)
+    {
+        return $limit == 'all' ? $query->get() : $query->paginate($limit);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | PDF and mail
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * View data for the PDF template, assembled by the Sales domain.
+     */
+    public function getPDFData(): mixed
+    {
+        $provider = app(EstimatePdfDataProvider::class);
+
+        return $provider->getPdfData($this);
+    }
+
+    /**
+     * Issuer's postal address as the PDF wants it, or false when the company
+     * has no address on file at all.
+     */
+    public function getCompanyAddress(): string|false
+    {
+        if ($this->company && ! $this->company->address()->exists()) {
+            return false;
+        }
+
+        return $this->renderAddress('estimate_company_address_format');
+    }
+
+    /**
+     * Where the goods would ship, or false when the contact keeps no shipping
+     * address.
+     */
+    public function getCustomerShippingAddress(): string|false
+    {
+        if ($this->customer && ! $this->customer->shippingAddress()->exists()) {
+            return false;
+        }
+
+        return $this->renderAddress('estimate_shipping_address_format');
+    }
+
+    /**
+     * Where the offer would be billed, or false when the contact keeps no
+     * billing address.
+     */
+    public function getCustomerBillingAddress(): string|false
+    {
+        if ($this->customer && ! $this->customer->billingAddress()->exists()) {
+            return false;
+        }
+
+        return $this->renderAddress('estimate_billing_address_format');
+    }
+
+    /**
+     * The notes field with its placeholders filled in and the resulting markup
+     * scrubbed before it reaches the renderer.
+     */
+    public function getNotes(): string
+    {
+        $rendered = $this->getFormattedString($this->notes);
+
+        return PdfHtmlSanitizer::sanitize($rendered);
+    }
+
+    /**
+     * Whether the PDF should ride along with the mail. Anything other than the
+     * explicit opt-out means yes.
+     */
+    public function getEmailAttachmentSetting(): bool
+    {
+        $setting = CompanySetting::getSetting('estimate_email_attachment', $this->company_id);
+
+        return $setting != 'NO';
+    }
+
+    /**
+     * Fill the placeholders in a mail body, then drop any brace token that was
+     * left standing because nothing answered to it.
+     */
+    public function getEmailBody(string $body): string
+    {
+        $placeholders = array_merge($this->getFieldsArray(), $this->getExtraFields());
+
+        $filled = strtr($body, $placeholders);
+
+        return preg_replace('/{(.*?)}/', '', $filled);
+    }
+
+    /**
+     * The placeholders this document type contributes on top of the shared
+     * company/contact set.
+     */
+    public function getExtraFields(): array
+    {
+        $tokens = [
+            'ESTIMATE_DATE' => $this->formattedEstimateDate,
+            'ESTIMATE_EXPIRY_DATE' => $this->formattedExpiryDate,
+            'ESTIMATE_NUMBER' => $this->estimate_number,
+            'ESTIMATE_REF_NUMBER' => $this->reference_number,
+        ];
+
+        $fields = [];
+
+        foreach ($tokens as $token => $value) {
+            $fields['{'.$token.'}'] = $value;
+        }
+
+        return $fields;
+    }
+
+    /**
+     * The invoice template that corresponds to this offer's own template.
      *
-     * Falls back to 'invoice1' if the mapped name does not exist in available templates.
+     * The two families are named in parallel, so the mapping is a word swap.
+     * When the swapped name is not among the installed invoice templates the
+     * first one takes over.
      */
     public function getInvoiceTemplateName(): string
     {
-        $templateName = Str::replace('estimate', 'invoice', $this->template_name);
+        $mapped = Str::replace('estimate', 'invoice', $this->template_name);
 
-        // Empty image format: only the names are wanted here, and the default
-        // builds a base64 preview for every template to answer that.
-        $name = array_column(PdfTemplateUtils::getFormattedTemplates('invoice', ''), 'name');
+        // The second argument is the preview image format. Leaving it empty
+        // stops the helper from rendering a base64 thumbnail of every template
+        // when all that is wanted here are the names.
+        $available = array_column(PdfTemplateUtils::getFormattedTemplates('invoice', ''), 'name');
 
-        if (in_array($templateName, $name) == false) {
-            $templateName = 'invoice1';
-        }
-
-        return $templateName;
+        return in_array($mapped, $available) ? $mapped : 'invoice1';
     }
 
     /**
-     * Handle the post-conversion action for this estimate based on company settings.
-     *
-     * Either deletes the estimate or marks it as accepted, depending on the
-     * 'estimate_convert_action' company setting.
+     * Apply whatever the company wants done with an offer once it has been
+     * turned into an invoice: drop it, or mark it as accepted. Any other
+     * setting leaves the record alone.
      */
     public function checkForEstimateConvertAction(): bool
     {
-        $convertEstimateAction = CompanySetting::getSetting(
-            'estimate_convert_action',
-            $this->company_id
-        );
+        $action = CompanySetting::getSetting('estimate_convert_action', $this->company_id);
 
-        if ($convertEstimateAction === 'delete_estimate') {
+        if ($action === 'delete_estimate') {
             $this->delete();
         }
 
-        if ($convertEstimateAction === 'mark_estimate_as_accepted') {
-            $this->status = self::STATUS_ACCEPTED;
-            $this->save();
+        if ($action === 'mark_estimate_as_accepted') {
+            $this->fill(['status' => self::STATUS_ACCEPTED])->save();
         }
 
         return true;
+    }
+
+    /**
+     * Render one of the company's address layouts against this document.
+     */
+    private function renderAddress(string $setting): string
+    {
+        $layout = CompanySetting::getSetting($setting, $this->company_id);
+
+        return $this->getFormattedString($layout);
     }
 }

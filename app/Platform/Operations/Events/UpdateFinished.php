@@ -4,22 +4,21 @@ namespace App\Platform\Operations\Events;
 
 use Illuminate\Foundation\Events\Dispatchable;
 
+/**
+ * Raised once an update has been applied and the version setting re-stamped.
+ *
+ * Carries both sides of the jump so listeners can tell what changed.
+ */
 class UpdateFinished
 {
     use Dispatchable;
 
-    public $new;
-
-    public $old;
-
     /**
-     * Create a new event instance.
-     *
-     * @return void
+     * @param  string  $old  the version that was running before the update
+     * @param  string  $new  the version that is now installed
      */
-    public function __construct($old, $new)
-    {
-        $this->old = $old;
-        $this->new = $new;
-    }
+    public function __construct(
+        public $old,
+        public $new,
+    ) {}
 }

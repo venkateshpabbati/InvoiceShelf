@@ -7,41 +7,52 @@ use App\Domains\Taxation\Http\Resources\TaxResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
+/**
+ * One line of an estimate as the admin API publishes it.
+ *
+ * Same snapshot idea as the invoice line -- figures stored on the row, the
+ * catalogue item only referenced by id, every amount paired with its `base_`
+ * twin at the document's exchange rate -- but the ordering of the quantity and
+ * price fields follows the estimate payload the SPA already expects, which is
+ * not the ordering used by the invoice line.
+ */
 class EstimateItemResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
-     *
      * @param  Request  $request
      */
     public function toArray($request): array
     {
+        $item = $this->resource;
+
         return [
-            'id' => $this->id,
-            'name' => $this->name,
-            'description' => $this->description,
-            'discount_type' => $this->discount_type,
-            'quantity' => $this->quantity,
-            'unit_name' => $this->unit_name,
-            'discount' => $this->discount,
-            'discount_val' => $this->discount_val,
-            'price' => $this->price,
-            'tax' => $this->tax,
-            'total' => $this->total,
-            'item_id' => $this->item_id,
-            'estimate_id' => $this->estimate_id,
-            'company_id' => $this->company_id,
-            'exchange_rate' => $this->exchange_rate,
-            'base_discount_val' => $this->base_discount_val,
-            'base_price' => $this->base_price,
-            'base_tax' => $this->base_tax,
-            'base_total' => $this->base_total,
-            'taxes' => $this->when($this->taxes()->exists(), function () {
-                return TaxResource::collection($this->taxes);
-            }),
-            'fields' => $this->when($this->fields()->exists(), function () {
-                return CustomFieldValueResource::collection($this->fields);
-            }),
+            'id' => $item->id,
+            'name' => $item->name,
+            'description' => $item->description,
+            'discount_type' => $item->discount_type,
+            'quantity' => $item->quantity,
+            'unit_name' => $item->unit_name,
+            'discount' => $item->discount,
+            'discount_val' => $item->discount_val,
+            'price' => $item->price,
+            'tax' => $item->tax,
+            'total' => $item->total,
+            'item_id' => $item->item_id,
+            'estimate_id' => $item->estimate_id,
+            'company_id' => $item->company_id,
+            'exchange_rate' => $item->exchange_rate,
+            'base_discount_val' => $item->base_discount_val,
+            'base_price' => $item->base_price,
+            'base_tax' => $item->base_tax,
+            'base_total' => $item->base_total,
+            'taxes' => $this->when(
+                $item->taxes()->exists(),
+                fn () => TaxResource::collection($item->taxes)
+            ),
+            'fields' => $this->when(
+                $item->fields()->exists(),
+                fn () => CustomFieldValueResource::collection($item->fields)
+            ),
         ];
     }
 }

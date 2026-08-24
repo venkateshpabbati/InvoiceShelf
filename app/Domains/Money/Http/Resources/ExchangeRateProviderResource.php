@@ -9,8 +9,6 @@ use Illuminate\Http\Resources\Json\JsonResource;
 class ExchangeRateProviderResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
-     *
      * @param  Request  $request
      */
     public function toArray($request): array
@@ -23,9 +21,10 @@ class ExchangeRateProviderResource extends JsonResource
             'driver_config' => $this->driver_config,
             'company_id' => $this->company_id,
             'active' => $this->active,
-            'company' => $this->when($this->company()->exists(), function () {
-                return new CompanyResource($this->company);
-            }),
+            'company' => $this->when(
+                $this->company()->exists(),
+                fn (): CompanyResource => new CompanyResource($this->company)
+            ),
         ];
     }
 }

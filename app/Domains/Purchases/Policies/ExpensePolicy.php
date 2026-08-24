@@ -7,119 +7,78 @@ use App\Domains\Purchases\Models\Expense;
 use Illuminate\Auth\Access\HandlesAuthorization;
 use Silber\Bouncer\BouncerFacade;
 
+/**
+ * Who may work with expenses.
+ *
+ * Every decision has two halves: the Bouncer ability, and -- for anything
+ * aimed at an existing row -- membership of the company that row belongs to,
+ * so an ability held in one company never reaches another company's data.
+ *
+ * Bouncer answers for the user it currently has scoped, not for the $user
+ * handed in; that argument only feeds the membership half.
+ */
 class ExpensePolicy
 {
     use HandlesAuthorization;
 
-    /**
-     * Determine whether the user can view any models.
-     *
-     * @return mixed
-     */
     public function viewAny(User $user): bool
     {
-        if (BouncerFacade::can('view-expense', Expense::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-expense', Expense::class);
     }
 
-    /**
-     * Determine whether the user can view the model.
-     *
-     * @return mixed
-     */
     public function view(User $user, Expense $expense): bool
     {
-        if (BouncerFacade::can('view-expense', $expense) && $user->hasCompany($expense->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-expense', $expense) && $this->sameCompany($user, $expense);
     }
 
-    /**
-     * Determine whether the user can create models.
-     *
-     * @return mixed
-     */
     public function create(User $user): bool
     {
-        if (BouncerFacade::can('create-expense', Expense::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('create-expense', Expense::class);
     }
 
-    /**
-     * Determine whether the user can update the model.
-     *
-     * @return mixed
-     */
     public function update(User $user, Expense $expense): bool
     {
-        if (BouncerFacade::can('edit-expense', $expense) && $user->hasCompany($expense->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('edit-expense', $expense) && $this->sameCompany($user, $expense);
     }
 
-    /**
-     * Determine whether the user can delete the model.
-     *
-     * @return mixed
-     */
     public function delete(User $user, Expense $expense): bool
     {
-        if (BouncerFacade::can('delete-expense', $expense) && $user->hasCompany($expense->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $expense);
     }
 
     /**
-     * Determine whether the user can restore the model.
-     *
-     * @return mixed
+     * Restoring and erasing are governed by the delete ability as well;
+     * expenses are not soft-deleted, so neither is reachable in practice.
      */
     public function restore(User $user, Expense $expense): bool
     {
-        if (BouncerFacade::can('delete-expense', $expense) && $user->hasCompany($expense->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $expense);
     }
 
-    /**
-     * Determine whether the user can permanently delete the model.
-     *
-     * @return mixed
-     */
     public function forceDelete(User $user, Expense $expense): bool
     {
-        if (BouncerFacade::can('delete-expense', $expense) && $user->hasCompany($expense->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $expense);
     }
 
     /**
-     * Determine whether the user can delete models.
+     * Clearing a batch of expenses at once.
      *
-     * @return mixed
+     * There is no row to check membership against here, so the delete ability
+     * on the class is the whole test; the deletion itself is scoped to the
+     * acting company by the caller.
      */
     public function deleteMultiple(User $user)
     {
-        if (BouncerFacade::can('delete-expense', Expense::class)) {
-            return true;
-        }
+        return BouncerFacade::can('delete-expense', Expense::class);
+    }
 
-        return false;
+    private function mayRemove(User $user, Expense $expense): bool
+    {
+        return BouncerFacade::can('delete-expense', $expense) && $this->sameCompany($user, $expense);
+    }
+
+    private function sameCompany(User $user, Expense $expense): bool
+    {
+        return $user->hasCompany($expense->company_id);
     }
 }

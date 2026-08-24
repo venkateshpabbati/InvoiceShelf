@@ -27,16 +27,24 @@ use Silber\Bouncer\Database\HasRolesAndAbilities;
 use Spatie\MediaLibrary\HasMedia;
 use Spatie\MediaLibrary\InteractsWithMedia;
 
+/**
+ * A contact owned by a company.
+ *
+ * The record doubles as a login for the customer portal, which is why it is an
+ * authenticatable identity rather than a plain model: it can hold a password,
+ * receive notifications, own an avatar in the media library and carry Bouncer
+ * abilities. Relations name their foreign keys explicitly.
+ */
 class Customer extends Authenticatable implements HasMedia
 {
-    protected $table = 'customers';
-
     use HasApiTokens;
     use HasCustomFields;
     use HasFactory;
     use HasRolesAndAbilities;
     use InteractsWithMedia;
     use Notifiable;
+
+    protected $table = 'customers';
 
     protected $guarded = [
         'id',
@@ -56,6 +64,9 @@ class Customer extends Authenticatable implements HasMedia
         'avatar',
     ];
 
+    /**
+     * Attribute casts.
+     */
     protected function casts(): array
     {
         return [
@@ -63,195 +74,303 @@ class Customer extends Authenticatable implements HasMedia
         ];
     }
 
-    public function getFormattedCreatedAtAttribute($value)
+    /**
+     * Company the contact was created under.
+     */
+    public function company(): BelongsTo
     {
-        $dateFormat = CompanySetting::getSetting('carbon_date_format', $this->company_id);
-
-        return Carbon::parse($this->created_at)->translatedFormat($dateFormat);
+        return $this->belongsTo(Company::class, 'company_id');
     }
 
-    public function setPasswordAttribute($value)
+    /**
+     * Currency every document for this contact is issued in.
+     */
+    public function currency(): BelongsTo
     {
-        if ($value != null) {
-            $this->attributes['password'] = bcrypt($value);
-        }
+        return $this->belongsTo(Currency::class, 'currency_id');
     }
 
+    /**
+     * Author of the record, linked through the creator_id column.
+     */
+    public function creator(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'creator_id');
+    }
+
+    /**
+     * Every postal address recorded for the contact.
+     */
+    public function addresses(): HasMany
+    {
+        return $this->hasMany(Address::class, 'customer_id');
+    }
+
+    /**
+     * The address invoices are billed to.
+     */
+    public function billingAddress(): HasOne
+    {
+        return $this->addressOfType(Address::BILLING_TYPE);
+    }
+
+    /**
+     * The address goods are shipped to.
+     */
+    public function shippingAddress(): HasOne
+    {
+        return $this->addressOfType(Address::SHIPPING_TYPE);
+    }
+
+    /**
+     * Estimates raised for the contact.
+     */
     public function estimates(): HasMany
     {
-        return $this->hasMany(Estimate::class);
+        return $this->hasMany(Estimate::class, 'customer_id');
     }
 
-    public function expenses(): HasMany
-    {
-        return $this->hasMany(Expense::class);
-    }
-
+    /**
+     * Invoices raised for the contact.
+     */
     public function invoices(): HasMany
     {
-        return $this->hasMany(Invoice::class);
+        return $this->hasMany(Invoice::class, 'customer_id');
     }
 
+    /**
+     * Recurring invoice schedules set up for the contact.
+     */
+    public function recurringInvoices(): HasMany
+    {
+        return $this->hasMany(RecurringInvoice::class, 'customer_id');
+    }
+
+    /**
+     * Payments received from the contact.
+     */
     public function payments(): HasMany
     {
-        return $this->hasMany(Payment::class);
+        return $this->hasMany(Payment::class, 'customer_id');
     }
 
+    /**
+     * Expenses booked against the contact.
+     */
+    public function expenses(): HasMany
+    {
+        return $this->hasMany(Expense::class, 'customer_id');
+    }
+
+    /**
+     * Mail sent to the contact.
+     */
     public function emailLogs(): MorphMany
     {
         return $this->morphMany(EmailLog::class, 'mailable');
     }
 
-    public function addresses(): HasMany
+    /**
+     * Creation date written in the company's configured date format and in the
+     * language the application is running in.
+     *
+     * @param  mixed  $value
+     */
+    public function getFormattedCreatedAtAttribute($value)
     {
-        return $this->hasMany(Address::class);
+        $format = CompanySetting::getSetting('carbon_date_format', $this->company_id);
+
+        return Carbon::parse($this->created_at)->translatedFormat($format);
     }
 
-    public function recurringInvoices(): HasMany
-    {
-        return $this->hasMany(RecurringInvoice::class);
-    }
-
-    public function currency(): BelongsTo
-    {
-        return $this->belongsTo(Currency::class);
-    }
-
-    public function creator(): BelongsTo
-    {
-        return $this->belongsTo(Customer::class, 'creator_id');
-    }
-
-    public function company(): BelongsTo
-    {
-        return $this->belongsTo(Company::class);
-    }
-
-    public function billingAddress(): HasOne
-    {
-        return $this->hasOne(Address::class)->where('type', Address::BILLING_TYPE);
-    }
-
-    public function shippingAddress(): HasOne
-    {
-        return $this->hasOne(Address::class)->where('type', Address::SHIPPING_TYPE);
-    }
-
-    public function sendPasswordResetNotification(mixed $token): void
-    {
-        $this->notify(new CustomerMailResetPasswordNotification($token));
-    }
-
+    /**
+     * Public URL of the avatar, or the number zero when none is attached.
+     */
     public function getAvatarAttribute()
     {
-        $avatar = $this->getMedia('customer_avatar')->first();
+        $image = $this->getMedia('customer_avatar')->first();
 
-        if ($avatar) {
-            return asset($avatar->getUrl());
-        }
-
-        return 0;
+        return $image ? asset($image->getUrl()) : 0;
     }
 
+    /**
+     * Hash a password on assignment.
+     *
+     * A null value is ignored so that saving the model without a password does
+     * not wipe the stored hash.
+     *
+     * @param  mixed  $value
+     */
+    public function setPasswordAttribute($value)
+    {
+        if ($value == null) {
+            return;
+        }
+
+        $this->attributes['password'] = bcrypt($value);
+    }
+
+    /**
+     * Deliver a portal password reset link.
+     */
+    public function sendPasswordResetNotification(mixed $token): void
+    {
+        $notification = new CustomerMailResetPasswordNotification($token);
+
+        $this->notify($notification);
+    }
+
+    /**
+     * Return the whole result set for the sentinel limit "all", otherwise a
+     * page of the requested size.
+     */
     public function scopePaginateData($query, $limit)
     {
-        if ($limit == 'all') {
-            return $query->get();
-        }
-
-        return $query->paginate($limit);
+        return $limit == 'all' ? $query->get() : $query->paginate($limit);
     }
 
+    /**
+     * Narrow to the company the current request is acting on.
+     */
     public function scopeWhereCompany($query)
     {
-        return $query->where('customers.company_id', request()->header('company'));
+        $company = request()->header('company');
+
+        return $query->where($this->qualifyColumn('company_id'), $company);
     }
 
-    public function scopeWhereContactName($query, $contactName)
+    /**
+     * Run every listed filter that carries a value.
+     */
+    public function scopeApplyFilters($query, array $filters)
     {
-        return $query->where('contact_name', 'LIKE', '%'.$contactName.'%');
+        $scopes = [
+            'search' => 'whereSearch',
+            'contact_name' => 'whereContactName',
+            'display_name' => 'whereDisplayName',
+            'customer_id' => 'whereCustomer',
+            'phone' => 'wherePhone',
+        ];
+
+        foreach ($scopes as $filter => $scope) {
+            $value = $filters[$filter] ?? null;
+
+            if ($value) {
+                $query->{$scope}($value);
+            }
+        }
+
+        $sortField = $filters['orderByField'] ?? null;
+        $sortDirection = $filters['orderBy'] ?? null;
+
+        if ($sortField || $sortDirection) {
+            $query->whereOrder($sortField ?: 'name', $sortDirection ?: 'asc');
+        }
     }
 
-    public function scopeWhereDisplayName($query, $displayName)
-    {
-        return $query->where('name', 'LIKE', '%'.$displayName.'%');
-    }
-
-    public function scopeWhereOrder($query, $orderByField, $orderBy)
-    {
-        SafeOrderBy::apply($query, $orderByField, $orderBy);
-    }
-
+    /**
+     * Keep only contacts matching every whitespace-separated term, a term
+     * counting as matched when it appears in the name, the email or the phone.
+     */
     public function scopeWhereSearch($query, $search)
     {
-        foreach (explode(' ', $search) as $term) {
-            $query->where(function ($query) use ($term) {
-                $query->where('name', 'LIKE', '%'.$term.'%')
-                    ->orWhere('email', 'LIKE', '%'.$term.'%')
-                    ->orWhere('phone', 'LIKE', '%'.$term.'%');
+        $terms = explode(' ', $search);
+
+        foreach ($terms as $term) {
+            $query->where(function ($match) use ($term) {
+                $needle = self::wildcard($term);
+
+                $match->where('name', 'LIKE', $needle)
+                    ->orWhere('email', 'LIKE', $needle)
+                    ->orWhere('phone', 'LIKE', $needle);
             });
         }
     }
 
+    /**
+     * Partial match on the contact person.
+     */
+    public function scopeWhereContactName($query, $contactName)
+    {
+        return $query->where('contact_name', 'LIKE', self::wildcard($contactName));
+    }
+
+    /**
+     * Partial match on the name the contact is displayed under.
+     */
+    public function scopeWhereDisplayName($query, $displayName)
+    {
+        return $query->where('name', 'LIKE', self::wildcard($displayName));
+    }
+
+    /**
+     * Partial match on the phone number.
+     */
     public function scopeWherePhone($query, $phone)
     {
-        return $query->where('phone', 'LIKE', '%'.$phone.'%');
+        return $query->where('phone', 'LIKE', self::wildcard($phone));
     }
 
+    /**
+     * Pull in one specific contact.
+     */
     public function scopeWhereCustomer($query, $customer_id)
     {
-        $query->orWhere('customers.id', $customer_id);
+        $query->orWhere($this->qualifyColumn('id'), $customer_id);
     }
 
+    /**
+     * Sort by a caller-supplied column, sanitised before it reaches SQL and
+     * falling back to the creation timestamp.
+     */
+    public function scopeWhereOrder($query, $orderByField, $orderBy)
+    {
+        return SafeOrderBy::apply($query, $orderByField, $orderBy, 'created_at');
+    }
+
+    /**
+     * Restrict to contacts invoiced inside a date range, when the caller gave
+     * both ends of it.
+     */
     public function scopeApplyInvoiceFilters($query, array $filters)
     {
-        $filters = collect($filters);
+        $from = $filters['from_date'] ?? null;
+        $to = $filters['to_date'] ?? null;
 
-        if ($filters->get('from_date') && $filters->get('to_date')) {
-            $start = Carbon::createFromFormat('Y-m-d', $filters->get('from_date'));
-            $end = Carbon::createFromFormat('Y-m-d', $filters->get('to_date'));
-            $query->invoicesBetween($start, $end);
+        if ($from && $to) {
+            $query->invoicesBetween(
+                Carbon::createFromFormat('Y-m-d', $from),
+                Carbon::createFromFormat('Y-m-d', $to)
+            );
         }
     }
 
+    /**
+     * Restrict to contacts holding at least one invoice dated inside the
+     * inclusive range.
+     */
     public function scopeInvoicesBetween($query, $start, $end)
     {
-        $query->whereHas('invoices', function ($query) use ($start, $end) {
-            $query->whereBetween(
-                'invoice_date',
-                [$start->format('Y-m-d'), $end->format('Y-m-d')]
-            );
+        $range = [$start->format('Y-m-d'), $end->format('Y-m-d')];
+
+        $query->whereHas('invoices', function ($invoices) use ($range) {
+            $invoices->whereBetween('invoice_date', $range);
         });
     }
 
-    public function scopeApplyFilters($query, array $filters)
+    /**
+     * The single address the contact keeps for the given role.
+     */
+    private function addressOfType(string $type): HasOne
     {
-        $filters = collect($filters);
+        return $this->hasOne(Address::class, 'customer_id')->where('type', $type);
+    }
 
-        if ($filters->get('search')) {
-            $query->whereSearch($filters->get('search'));
-        }
-
-        if ($filters->get('contact_name')) {
-            $query->whereContactName($filters->get('contact_name'));
-        }
-
-        if ($filters->get('display_name')) {
-            $query->whereDisplayName($filters->get('display_name'));
-        }
-
-        if ($filters->get('customer_id')) {
-            $query->whereCustomer($filters->get('customer_id'));
-        }
-
-        if ($filters->get('phone')) {
-            $query->wherePhone($filters->get('phone'));
-        }
-
-        if ($filters->get('orderByField') || $filters->get('orderBy')) {
-            $field = $filters->get('orderByField') ? $filters->get('orderByField') : 'name';
-            $orderBy = $filters->get('orderBy') ? $filters->get('orderBy') : 'asc';
-            $query->whereOrder($field, $orderBy);
-        }
+    /**
+     * Wrap a term for a substring LIKE comparison.
+     */
+    private static function wildcard($term): string
+    {
+        return '%'.$term.'%';
     }
 }

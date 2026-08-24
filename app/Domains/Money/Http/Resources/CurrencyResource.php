@@ -5,11 +5,13 @@ namespace App\Domains\Money\Http\Resources;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
+/**
+ * A currency together with everything needed to render an amount in it, plus
+ * the rate a caller resolved onto the model (null when none was).
+ */
 class CurrencyResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
-     *
      * @param  Request  $request
      */
     public function toArray($request): array

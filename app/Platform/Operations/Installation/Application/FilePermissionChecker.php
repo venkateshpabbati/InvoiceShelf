@@ -2,37 +2,39 @@
 
 namespace App\Platform\Operations\Installation\Application;
 
+/**
+ * Reports whether the writable directories the application relies on are at
+ * least as permissive as the installer requires.
+ */
 class FilePermissionChecker
 {
-    /**
-     * @var array
-     */
-    protected $results = [];
+    protected array $results = [];
 
-    /**
-     * Set the result array permissions and errors.
-     *
-     * @return mixed
-     */
     public function __construct()
     {
-        $this->results['permissions'] = [];
-
-        $this->results['errors'] = null;
+        $this->results = [
+            'permissions' => [],
+            'errors' => null,
+        ];
     }
 
     /**
-     * Check for the folders permissions.
-     *
-     * @return array
+     * Walk a map of relative folder path => required octal mode. Entries are
+     * reported in the order given; "errors" stays null until something fails.
      */
-    public function check(array $folders)
+    public function check(array $folders): array
     {
-        foreach ($folders as $folder => $permission) {
-            if (! ($this->getPermission($folder) >= $permission)) {
-                $this->addFileAndSetErrors($folder, $permission, false);
-            } else {
-                $this->addFile($folder, $permission, true);
+        foreach ($folders as $folder => $required) {
+            $granted = $this->modeOf($folder) >= $required;
+
+            $this->results['permissions'][] = [
+                'folder' => $folder,
+                'permission' => $required,
+                'isSet' => $granted,
+            ];
+
+            if (! $granted) {
+                $this->results['errors'] = true;
             }
         }
 
@@ -40,34 +42,12 @@ class FilePermissionChecker
     }
 
     /**
-     * Get a folder permission.
-     *
-     * @return string
+     * The last four octal digits of the folder's mode, e.g. "0775". Both this
+     * and the requirement are numeric strings, so the caller's comparison is
+     * made on their numeric value.
      */
-    private function getPermission($folder)
+    private function modeOf(string $folder): string
     {
         return substr(sprintf('%o', fileperms(base_path($folder))), -4);
-    }
-
-    /**
-     * Add the file to the list of results.
-     */
-    private function addFile($folder, $permission, $isSet)
-    {
-        array_push($this->results['permissions'], [
-            'folder' => $folder,
-            'permission' => $permission,
-            'isSet' => $isSet,
-        ]);
-    }
-
-    /**
-     * Add the file and set the errors.
-     */
-    private function addFileAndSetErrors($folder, $permission, $isSet)
-    {
-        $this->addFile($folder, $permission, $isSet);
-
-        $this->results['errors'] = true;
     }
 }

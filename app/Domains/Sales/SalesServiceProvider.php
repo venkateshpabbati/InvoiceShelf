@@ -26,6 +26,19 @@ use Illuminate\Support\ServiceProvider;
 
 class SalesServiceProvider extends ServiceProvider
 {
+    /**
+     * Abilities answered by a policy method rather than by a model instance,
+     * as ability name => [policy class, policy method].
+     */
+    private const POLICY_ABILITIES = [
+        'send invoice' => [InvoicePolicy::class, 'send'],
+        'create credit note' => [CreditNotePolicy::class, 'create'],
+        'send estimate' => [EstimatePolicy::class, 'send'],
+        'delete multiple invoices' => [InvoicePolicy::class, 'deleteMultiple'],
+        'delete multiple estimates' => [EstimatePolicy::class, 'deleteMultiple'],
+        'delete multiple recurring invoices' => [RecurringInvoicePolicy::class, 'deleteMultiple'],
+    ];
+
     public function register(): void
     {
         $this->app->bind(EstimatePdfDataProvider::class, EstimateService::class);
@@ -45,11 +58,9 @@ class SalesServiceProvider extends ServiceProvider
         Gate::policy(Estimate::class, EstimatePolicy::class);
         Gate::policy(Invoice::class, InvoicePolicy::class);
         Gate::policy(RecurringInvoice::class, RecurringInvoicePolicy::class);
-        Gate::define('send invoice', [InvoicePolicy::class, 'send']);
-        Gate::define('create credit note', [CreditNotePolicy::class, 'create']);
-        Gate::define('send estimate', [EstimatePolicy::class, 'send']);
-        Gate::define('delete multiple invoices', [InvoicePolicy::class, 'deleteMultiple']);
-        Gate::define('delete multiple estimates', [EstimatePolicy::class, 'deleteMultiple']);
-        Gate::define('delete multiple recurring invoices', [RecurringInvoicePolicy::class, 'deleteMultiple']);
+
+        foreach (self::POLICY_ABILITIES as $ability => $handler) {
+            Gate::define($ability, $handler);
+        }
     }
 }

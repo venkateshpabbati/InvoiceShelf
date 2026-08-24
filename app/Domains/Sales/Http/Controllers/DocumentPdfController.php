@@ -18,19 +18,23 @@ class DocumentPdfController extends Controller
 
     public function invoice(Request $request, Invoice $invoice)
     {
-        if ($request->has('preview')) {
+        if ($request->exists('preview')) {
             return $this->invoiceService->getPdfData($invoice);
         }
 
-        return $invoice->getGeneratedPDFOrStream('invoice');
+        $pdf = $invoice->getGeneratedPDFOrStream('invoice');
+
+        return $pdf;
     }
 
     public function estimate(Request $request, Estimate $estimate)
     {
-        if ($request->has('preview')) {
+        if ($request->exists('preview')) {
             return $this->estimateService->getPdfData($estimate);
         }
 
-        return $estimate->getGeneratedPDFOrStream('estimate');
+        $pdf = $estimate->getGeneratedPDFOrStream('estimate');
+
+        return $pdf;
     }
 }

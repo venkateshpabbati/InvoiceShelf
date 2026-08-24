@@ -7,77 +7,82 @@ use App\Platform\Mail\Application\MailConfigurationService;
 use App\Platform\Mail\Http\Requests\MailEnvironmentRequest;
 use App\Platform\Mail\Mailables\TestMail;
 use App\Platform\Operations\Models\Setting;
-use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Mail;
-use Illuminate\Validation\ValidationException;
 
+/**
+ * Installation-wide mail transport: which driver the app sends through, the
+ * credentials behind it, and a throwaway probe message to prove it works.
+ */
 class MailConfigurationController extends Controller
 {
-    public function __construct(private readonly MailConfigurationService $mailConfigurationService) {}
+    /**
+     * Gate ability guarding every endpoint on this controller.
+     */
+    private const ABILITY = 'manage email config';
 
     /**
-     * Save the mail environment variables
-     *
-     *
-     *
-     * @throws AuthorizationException
+     * Onboarding wizard step recorded once a transport has been stored.
+     */
+    private const WIZARD_STEP = 4;
+
+    public function __construct(
+        private readonly MailConfigurationService $mailConfigurationService
+    ) {}
+
+    /**
+     * Store the submitted transport settings. An installation that has not yet
+     * finished onboarding is nudged forward to the mail step of the wizard.
      */
     public function saveMailEnvironment(MailEnvironmentRequest $request): JsonResponse
     {
-        $this->authorize('manage email config');
+        $this->authorize(self::ABILITY);
 
-        $setting = Setting::getSetting('profile_complete');
+        $profileState = Setting::getSetting('profile_complete');
 
-        $this->mailConfigurationService->saveGlobalConfig($request->validated());
+        $this->mailConfigurationService->saveGlobalConfig(
+            $request->validated()
+        );
 
-        if ($setting !== 'COMPLETED') {
-            Setting::setSetting('profile_complete', 4);
+        if ($profileState !== 'COMPLETED') {
+            Setting::setSetting('profile_complete', self::WIZARD_STEP);
         }
 
-        return response()->json([
-            'success' => 'mail_variables_save_successfully',
-        ]);
+        return response()->json(['success' => 'mail_variables_save_successfully']);
     }
 
     /**
-     * Return the mail environment variables
-     *
-     *
-     * @throws AuthorizationException
+     * Read back the stored installation-wide transport settings.
      */
     public function getMailEnvironment(): JsonResponse
     {
-        $this->authorize('manage email config');
+        $this->authorize(self::ABILITY);
 
-        return response()->json($this->mailConfigurationService->getGlobalConfig());
+        return response()->json(
+            $this->mailConfigurationService->getGlobalConfig()
+        );
     }
 
     /**
-     * Return the available mail drivers
-     *
-     *
-     * @throws AuthorizationException
+     * List the transports this installation is actually able to send through.
      */
     public function getMailDrivers(): JsonResponse
     {
-        $this->authorize('manage email config');
+        $this->authorize(self::ABILITY);
 
-        return response()->json($this->mailConfigurationService->getAvailableDrivers());
+        return response()->json(
+            $this->mailConfigurationService->getAvailableDrivers()
+        );
     }
 
     /**
-     * Test the email configuration
-     *
-     *
-     *
-     * @throws AuthorizationException
-     * @throws ValidationException
+     * Deliver a one-off message through the active transport so an admin can
+     * confirm the credentials they just saved really work.
      */
     public function testEmailConfig(Request $request): JsonResponse
     {
-        $this->authorize('manage email config');
+        $this->authorize(self::ABILITY);
 
         $this->validate($request, [
             'to' => 'required|email',
@@ -85,10 +90,10 @@ class MailConfigurationController extends Controller
             'message' => 'required',
         ]);
 
-        Mail::to($request->to)->send(new TestMail($request->subject, $request->message));
+        $probe = new TestMail($request->subject, $request->message);
 
-        return response()->json([
-            'success' => true,
-        ]);
+        Mail::to($request->to)->send($probe);
+
+        return response()->json(['success' => true]);
     }
 }

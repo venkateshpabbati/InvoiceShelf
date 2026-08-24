@@ -21,6 +21,11 @@ use Illuminate\Http\Request;
 use Illuminate\Mail\Markdown;
 use Illuminate\Validation\ValidationException;
 
+/**
+ * Company-scoped invoice endpoints: listing, the write surface, bulk removal,
+ * mailing, cloning, conversion to an estimate, credit notes, and the status
+ * transitions.
+ */
 class InvoicesController extends Controller
 {
     public function __construct(
@@ -29,7 +34,7 @@ class InvoicesController extends Controller
     ) {}
 
     /**
-     * Display a listing of the resource.
+     * Paginated invoices of the active company, newest first.
      *
      * @return JsonResponse
      */
@@ -38,23 +43,28 @@ class InvoicesController extends Controller
         $this->authorize('viewAny', Invoice::class);
 
         $limit = $request->input('limit', 10);
+        $filters = $request->all();
 
         // creditNotes drives the "cancelled" badge on every row, so it is
         // eager-loaded (two columns) rather than probed per row.
-        $invoices = Invoice::whereCompany()
-            ->applyFilters($request->all())
+        $invoices = Invoice::query()
+            ->whereCompany()
+            ->applyFilters($filters)
             ->with(['customer', 'creditNotes:id,related_invoice_id,invoice_number,total'])
             ->latest()
             ->paginateData($limit);
 
         return InvoiceResource::collection($invoices)
-            ->additional(['meta' => [
-                'invoice_total_count' => Invoice::whereCompany()->count(),
-            ]]);
+            ->additional([
+                'meta' => [
+                    'invoice_total_count' => Invoice::query()->whereCompany()->count(),
+                ],
+            ]);
     }
 
     /**
-     * Store a newly created resource in storage.
+     * Persist a new invoice, optionally mail it straight away, and queue its
+     * PDF render.
      *
      * @param  Request  $request
      * @return JsonResponse
@@ -70,17 +80,17 @@ class InvoicesController extends Controller
             customFields: $this->customFields($request),
         );
 
-        if ($request->has('invoiceSend')) {
+        if ($request->exists('invoiceSend')) {
             $this->invoiceService->send($invoice, $request->only(['subject', 'body']));
         }
 
-        GenerateInvoicePdfJob::dispatch($invoice);
+        dispatch(new GenerateInvoicePdfJob($invoice));
 
-        return new InvoiceResource($invoice);
+        return InvoiceResource::make($invoice);
     }
 
     /**
-     * Display the specified resource.
+     * One invoice, loaded with what its detail page reads.
      *
      * @return JsonResponse
      */
@@ -103,7 +113,7 @@ class InvoicesController extends Controller
     }
 
     /**
-     * Update the specified resource in storage.
+     * Overwrite an invoice, lines and taxes included, and re-render its PDF.
      *
      * @param  Request  $request
      * @return JsonResponse
@@ -120,13 +130,13 @@ class InvoicesController extends Controller
             customFields: $this->customFields($request),
         );
 
-        GenerateInvoicePdfJob::dispatch($invoice, true);
+        dispatch(new GenerateInvoicePdfJob($invoice, true));
 
-        return new InvoiceResource($invoice);
+        return InvoiceResource::make($invoice);
     }
 
     /**
-     * delete the specified resources in storage.
+     * Bulk removal. Ids outside the active company are silently skipped.
      *
      * @param  Request  $request
      * @return JsonResponse
@@ -141,9 +151,7 @@ class InvoicesController extends Controller
 
         $this->invoiceService->delete($ids);
 
-        return response()->json([
-            'success' => true,
-        ]);
+        return response()->json(['success' => true]);
     }
 
     public function send(SendInvoiceRequest $request, Invoice $invoice)
@@ -152,19 +160,17 @@ class InvoicesController extends Controller
 
         $this->invoiceService->send($invoice, $request->all());
 
-        return response()->json([
-            'success' => true,
-        ]);
+        return response()->json(['success' => true]);
     }
 
     public function sendPreview(SendInvoiceRequest $request, Invoice $invoice)
     {
         $this->authorize('send invoice', $invoice);
 
-        $markdown = new Markdown(view(), config('mail.markdown'));
+        $markdown = new Markdown(app('view'), config('mail.markdown'));
 
         $data = $this->invoiceService->sendInvoiceData($invoice, $request->all());
-        $data['url'] = $invoice->invoicePdfUrl;
+        $data['url'] = $invoice->invoice_pdf_url;
 
         // Preview the template that will actually be sent: a credit note goes
         // out through SendCreditNoteMail, so it must preview as one.
@@ -257,9 +263,7 @@ class InvoicesController extends Controller
 
         $this->invoiceService->changeStatus($invoice, $request->status);
 
-        return response()->json([
-            'success' => true,
-        ]);
+        return response()->json(['success' => true]);
     }
 
     private function customFields(InvoicesRequest $request): ?iterable

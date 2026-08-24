@@ -9,81 +9,138 @@ use App\Domains\Accounts\Models\CompanySetting;
 use Silber\Bouncer\BouncerFacade;
 use Silber\Bouncer\Database\Role;
 
+/**
+ * Everything that happens to a company either side of its working life: the
+ * furniture a fresh one is handed, and the demolition of an old one.
+ *
+ * The reference data (payment methods, units) is provisioned through the
+ * adapter; what stays here is the authorization scaffolding and the sheet of
+ * default preferences a company starts out with.
+ */
 class CompanyService
 {
+    /** Name and title of the role every company is created with. */
+    private const OWNER_ROLE = 'owner';
+
+    private const OWNER_ROLE_TITLE = 'Owner';
+
+    /** Mail bodies quoted into the outgoing document mails. */
+    private const INVOICE_MAIL_BODY = 'You have received a new invoice from <b>{COMPANY_NAME}</b>.</br> Please download using the button below:';
+
+    private const ESTIMATE_MAIL_BODY = 'You have received a new estimate from <b>{COMPANY_NAME}</b>.</br> Please download using the button below:';
+
+    private const PAYMENT_MAIL_BODY = 'Thank you for the payment.</b></br> Please download your payment receipt using the button below:';
+
+    /** Address blocks printed on the documents; placeholders filled at render. */
+    private const BILLING_ADDRESS_FORMAT = '<h3>{BILLING_ADDRESS_NAME}</h3><p>{BILLING_ADDRESS_STREET_1}</p><p>{BILLING_ADDRESS_STREET_2}</p><p>{BILLING_CITY}  {BILLING_STATE}</p><p>{BILLING_COUNTRY}  {BILLING_ZIP_CODE}</p><p>{BILLING_PHONE}</p>';
+
+    private const SHIPPING_ADDRESS_FORMAT = '<h3>{SHIPPING_ADDRESS_NAME}</h3><p>{SHIPPING_ADDRESS_STREET_1}</p><p>{SHIPPING_ADDRESS_STREET_2}</p><p>{SHIPPING_CITY}  {SHIPPING_STATE}</p><p>{SHIPPING_COUNTRY}  {SHIPPING_ZIP_CODE}</p><p>{SHIPPING_PHONE}</p>';
+
+    private const COMPANY_ADDRESS_FORMAT = '<h3><strong>{COMPANY_NAME}</strong></h3><p>{COMPANY_ADDRESS_STREET_1}</p><p>{COMPANY_ADDRESS_STREET_2}</p><p>{COMPANY_CITY} {COMPANY_STATE}</p><p>{COMPANY_COUNTRY}  {COMPANY_ZIP_CODE}</p><p>{COMPANY_PHONE}</p>';
+
+    /** The payer block on a receipt, spaced differently from the billing one. */
+    private const PAYMENT_CUSTOMER_ADDRESS_FORMAT = '<h3>{BILLING_ADDRESS_NAME}</h3><p>{BILLING_ADDRESS_STREET_1}</p><p>{BILLING_ADDRESS_STREET_2}</p><p>{BILLING_CITY} {BILLING_STATE} {BILLING_ZIP_CODE}</p><p>{BILLING_COUNTRY}</p><p>{BILLING_PHONE}</p>';
+
     public function __construct(
         private readonly CompanyDefaultsProvisioner $companyDefaultsProvisioner,
         private readonly CompanyDataPurger $companyDataPurger,
     ) {}
 
+    /**
+     * Furnish a newly created company.
+     *
+     * Order is fixed: the owner role first, so the creator has something to be
+     * assigned; then the reference data; then the preference sheet, which is
+     * where the chosen currency lands.
+     */
     public function setupDefaults(Company $company, int $currencyId = 13): bool
     {
         $this->setupRoles($company);
+
         $this->companyDefaultsProvisioner->provision($company);
+
         $this->setupDefaultSettings($company, $currencyId);
 
         return true;
     }
 
+    /**
+     * Create the company's `owner` role and grant it the whole ability
+     * catalogue — every entry in the configuration, against the subject model
+     * the entry names.
+     *
+     * Roles live inside a company's scope, so the scope is moved onto this
+     * company first and left there for whatever the caller does next.
+     */
     public function setupRoles(Company $company): void
     {
         BouncerFacade::scope()->to($company->id);
 
         $owner = BouncerFacade::role()->firstOrCreate([
-            'name' => 'owner',
-            'title' => 'Owner',
+            'name' => self::OWNER_ROLE,
+            'title' => self::OWNER_ROLE_TITLE,
             'scope' => $company->id,
         ]);
 
-        foreach (config('abilities.abilities') as $ability) {
-            BouncerFacade::allow($owner)->to($ability['ability'], $ability['model']);
+        foreach (config('abilities.abilities') as $entry) {
+            BouncerFacade::allow($owner)->to($entry['ability'], $entry['model']);
         }
     }
 
+    /**
+     * Wind a company up.
+     *
+     * The purger clears everything filed against the company first; what is
+     * left here is the company's own furniture — its scoped roles, the
+     * memberships pointing at it, its preferences, and the row itself. The
+     * member accounts survive: only the link between them and the company is
+     * cut.
+     */
     public function delete(Company $company): bool
     {
         $this->companyDataPurger->purge($company);
 
-        $roles = Role::when($company->id, function ($query) use ($company) {
-            return $query->where('scope', $company->id);
-        })->get();
-
-        if ($roles) {
-            $roles->map(function ($role) {
+        Role::query()
+            ->when($company->id, function ($query) use ($company) {
+                $query->where('scope', $company->id);
+            })
+            ->get()
+            ->each(function ($role) {
                 $role->delete();
             });
-        }
 
         $company->users()->detach();
 
         $company->settings()->delete();
+
         $company->delete();
 
         return true;
     }
 
+    /**
+     * The preference sheet a company starts out with.
+     *
+     * Two of these are historical rather than sensible and are kept on
+     * purpose: the time zone defaults to `Asia/Kolkata`, and outgoing mail is
+     * addressed from the project's own no-reply address until an owner changes
+     * it. `bulk_exchange_rate_configured` starts out done, which keeps fresh
+     * companies out of the exchange-rate backfill.
+     */
     private function setupDefaultSettings(Company $company, int $currencyId): void
     {
-        $defaultInvoiceEmailBody = 'You have received a new invoice from <b>{COMPANY_NAME}</b>.</br> Please download using the button below:';
-        $defaultEstimateEmailBody = 'You have received a new estimate from <b>{COMPANY_NAME}</b>.</br> Please download using the button below:';
-        $defaultPaymentEmailBody = 'Thank you for the payment.</b></br> Please download your payment receipt using the button below:';
-        $billingAddressFormat = '<h3>{BILLING_ADDRESS_NAME}</h3><p>{BILLING_ADDRESS_STREET_1}</p><p>{BILLING_ADDRESS_STREET_2}</p><p>{BILLING_CITY}  {BILLING_STATE}</p><p>{BILLING_COUNTRY}  {BILLING_ZIP_CODE}</p><p>{BILLING_PHONE}</p>';
-        $shippingAddressFormat = '<h3>{SHIPPING_ADDRESS_NAME}</h3><p>{SHIPPING_ADDRESS_STREET_1}</p><p>{SHIPPING_ADDRESS_STREET_2}</p><p>{SHIPPING_CITY}  {SHIPPING_STATE}</p><p>{SHIPPING_COUNTRY}  {SHIPPING_ZIP_CODE}</p><p>{SHIPPING_PHONE}</p>';
-        $companyAddressFormat = '<h3><strong>{COMPANY_NAME}</strong></h3><p>{COMPANY_ADDRESS_STREET_1}</p><p>{COMPANY_ADDRESS_STREET_2}</p><p>{COMPANY_CITY} {COMPANY_STATE}</p><p>{COMPANY_COUNTRY}  {COMPANY_ZIP_CODE}</p><p>{COMPANY_PHONE}</p>';
-        $paymentFromCustomerAddress = '<h3>{BILLING_ADDRESS_NAME}</h3><p>{BILLING_ADDRESS_STREET_1}</p><p>{BILLING_ADDRESS_STREET_2}</p><p>{BILLING_CITY} {BILLING_STATE} {BILLING_ZIP_CODE}</p><p>{BILLING_COUNTRY}</p><p>{BILLING_PHONE}</p>';
-
-        $settings = [
-            'invoice_mail_body' => $defaultInvoiceEmailBody,
-            'estimate_mail_body' => $defaultEstimateEmailBody,
-            'payment_mail_body' => $defaultPaymentEmailBody,
-            'invoice_company_address_format' => $companyAddressFormat,
-            'invoice_shipping_address_format' => $shippingAddressFormat,
-            'invoice_billing_address_format' => $billingAddressFormat,
-            'estimate_company_address_format' => $companyAddressFormat,
-            'estimate_shipping_address_format' => $shippingAddressFormat,
-            'estimate_billing_address_format' => $billingAddressFormat,
-            'payment_company_address_format' => $companyAddressFormat,
-            'payment_from_customer_address_format' => $paymentFromCustomerAddress,
+        CompanySetting::setSettings([
+            'invoice_mail_body' => self::INVOICE_MAIL_BODY,
+            'estimate_mail_body' => self::ESTIMATE_MAIL_BODY,
+            'payment_mail_body' => self::PAYMENT_MAIL_BODY,
+            'invoice_company_address_format' => self::COMPANY_ADDRESS_FORMAT,
+            'invoice_shipping_address_format' => self::SHIPPING_ADDRESS_FORMAT,
+            'invoice_billing_address_format' => self::BILLING_ADDRESS_FORMAT,
+            'estimate_company_address_format' => self::COMPANY_ADDRESS_FORMAT,
+            'estimate_shipping_address_format' => self::SHIPPING_ADDRESS_FORMAT,
+            'estimate_billing_address_format' => self::BILLING_ADDRESS_FORMAT,
+            'payment_company_address_format' => self::COMPANY_ADDRESS_FORMAT,
+            'payment_from_customer_address_format' => self::PAYMENT_CUSTOMER_ADDRESS_FORMAT,
             'currency' => $currencyId,
             'time_zone' => 'Asia/Kolkata',
             'language' => 'en',
@@ -114,8 +171,6 @@ class CompanyService
             'estimate_convert_action' => 'no_action',
             'automatically_expire_public_links' => 'YES',
             'link_expiry_days' => 7,
-        ];
-
-        CompanySetting::setSettings($settings, $company->id);
+        ], $company->id);
     }
 }

@@ -6,4 +6,5 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('payments', [PaymentsController::class, 'index']);
 Route::get('payments/{id}', [PaymentsController::class, 'show']);
-Route::get('/payment-method', PaymentMethodController::class);
+// Every method on the company's books is offered here, unfiltered.
+Route::get('payment-method', PaymentMethodController::class);

@@ -18,19 +18,32 @@ Route::post('/invoices/{invoice}/clone', [InvoicesController::class, 'clone']);
 Route::post('/invoices/{invoice}/convert-to-estimate', [InvoicesController::class, 'convertToEstimate']);
 Route::post('/invoices/{invoice}/credit-note', [InvoicesController::class, 'createCreditNote']);
 Route::post('/invoices/{invoice}/status', [InvoicesController::class, 'changeStatus']);
-Route::post('/invoices/delete', [InvoicesController::class, 'delete']);
-Route::get('/invoices/templates', InvoiceTemplatesController::class);
-Route::apiResource('invoices', InvoicesController::class);
 
-Route::get('/recurring-invoice-frequency', RecurringInvoiceFrequencyController::class);
-Route::post('/recurring-invoices/delete', [RecurringInvoiceController::class, 'delete']);
-Route::apiResource('recurring-invoices', RecurringInvoiceController::class);
+// Two collection-level endpoints that are not resource verbs. Both are
+// declared ahead of the resource, so neither literal segment can ever be
+// read as an {invoice} key.
+Route::prefix('invoices')->group(function (): void {
+    Route::post('delete', [InvoicesController::class, 'delete']);
+    Route::get('templates', InvoiceTemplatesController::class);
+});
+Route::apiResources(['invoices' => InvoicesController::class]);
+
+// Recurring templates: first the fixed cron presets the editor offers, then
+// the same bulk-delete-before-the-resource ordering.
+Route::get('recurring-invoice-frequency', RecurringInvoiceFrequencyController::class);
+Route::post('recurring-invoices/delete', [RecurringInvoiceController::class, 'delete']);
+Route::apiResources(['recurring-invoices' => RecurringInvoiceController::class]);
 
 Route::get('/estimates/{estimate}/send/preview', [EstimatesController::class, 'sendPreview']);
 Route::post('/estimates/{estimate}/send', [EstimatesController::class, 'send']);
 Route::post('/estimates/{estimate}/clone', [EstimatesController::class, 'clone']);
 Route::post('/estimates/{estimate}/status', [EstimatesController::class, 'changeStatus']);
 Route::post('/estimates/{estimate}/convert-to-invoice', [EstimatesController::class, 'convertToInvoice']);
-Route::get('/estimates/templates', EstimateTemplatesController::class);
-Route::post('/estimates/delete', [EstimatesController::class, 'delete']);
-Route::apiResource('estimates', EstimatesController::class);
+
+// As for invoices, ahead of the resource — here the templates listing comes
+// first, which is the order this file has always used for offers.
+Route::prefix('estimates')->group(function (): void {
+    Route::get('templates', EstimateTemplatesController::class);
+    Route::post('delete', [EstimatesController::class, 'delete']);
+});
+Route::apiResources(['estimates' => EstimatesController::class]);

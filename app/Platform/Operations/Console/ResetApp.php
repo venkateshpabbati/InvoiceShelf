@@ -8,82 +8,55 @@ use Illuminate\Support\Facades\Artisan;
 
 use function Laravel\Prompts\confirm;
 
+/**
+ * Development helper that throws the instance away and rebuilds it with demo
+ * data. Everything in the database goes; there is no undo.
+ *
+ * The app is taken down for the duration so nobody can talk to a half-migrated
+ * schema, and brought back up as the final step.
+ */
 class ResetApp extends Command
 {
     use ConfirmableTrait;
 
-    /**
-     * The name and signature of the console command.
-     *
-     * @var string
-     */
     protected $signature = 'reset:app {--force}';
 
-    /**
-     * The console command description.
-     *
-     * @var string
-     */
     protected $description = 'Clean database and public/storage folder';
 
-    /**
-     * Create a new command instance.
-     *
-     * @return void
-     */
-    public function __construct()
+    public function handle(): void
     {
-        parent::__construct();
+        if (! $this->cleared()) {
+            $this->components->error('Reset cancelled');
+
+            return;
+        }
+
+        $this->step('Activating maintenance mode...', 'down');
+        $this->step('Running migrate:fresh', 'migrate:fresh --seed --force');
+        $this->step('Seeding database', 'db:seed', ['--class' => 'DemoSeeder', '--force' => true]);
+        $this->step('Clearing cache...', 'optimize:clear');
+        $this->step('Deactivating maintenance mode...', 'up');
+
+        $this->info('App reset completed successfully!');
     }
 
     /**
-     * Execute the console command.
-     *
-     * @return mixed
+     * Whether the operator has agreed to lose the database — either up front
+     * with --force, or by answering the prompt.
      */
-    /**
-     * Execute the console command to reset the application.
-     *
-     * This will:
-     * 1. Enable maintenance mode to prevent access during reset
-     * 2. Fresh migrate the database with initial seeds
-     * 3. Seed demo data using DemoSeeder
-     * 4. Clear all application caches
-     * 5. Disable maintenance mode
-     *
-     * The --force flag can be used to skip confirmation prompt.
-     */
-    public function handle(): void
+    private function cleared(): bool
     {
+        return (bool) $this->option('force')
+            || confirm('Are you sure you want to reset the application?');
+    }
 
-        if (! $this->option('force')) {
-            if (! confirm('Are you sure you want to reset the application?')) {
-                $this->components->error('Reset cancelled');
+    /**
+     * Announce a stage, then hand it to Artisan.
+     */
+    private function step(string $announcement, string $command, array $arguments = []): void
+    {
+        $this->info($announcement);
 
-                return;
-            }
-        }
-
-        // Enable maintenance mode to prevent access during reset
-        $this->info('Activating maintenance mode...');
-        Artisan::call('down');
-
-        // Fresh migrate database and run initial seeds
-        $this->info('Running migrate:fresh');
-        Artisan::call('migrate:fresh --seed --force');
-
-        // Seed demo data
-        $this->info('Seeding database');
-        Artisan::call('db:seed', ['--class' => 'DemoSeeder', '--force' => true]);
-
-        // Clear all application caches
-        $this->info('Clearing cache...');
-        Artisan::call('optimize:clear');
-
-        // Disable maintenance mode
-        $this->info('Deactivating maintenance mode...');
-        Artisan::call('up');
-
-        $this->info('App reset completed successfully!');
+        Artisan::call($command, $arguments);
     }
 }

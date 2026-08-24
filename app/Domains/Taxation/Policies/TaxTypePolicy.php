@@ -7,105 +7,66 @@ use App\Domains\Taxation\Models\TaxType;
 use Illuminate\Auth\Access\HandlesAuthorization;
 use Silber\Bouncer\BouncerFacade;
 
+/**
+ * Who may work with tax types.
+ *
+ * Every decision has two halves: the Bouncer ability, and — for anything
+ * aimed at an existing row — membership of the company that row belongs to,
+ * so an ability held in one company never reaches another company's data.
+ *
+ * Bouncer answers for the user it currently has scoped, not for the $user
+ * handed in; that argument only feeds the membership half.
+ */
 class TaxTypePolicy
 {
     use HandlesAuthorization;
 
-    /**
-     * Determine whether the user can view any models.
-     *
-     * @return mixed
-     */
     public function viewAny(User $user): bool
     {
-        if (BouncerFacade::can('view-tax-type', TaxType::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-tax-type', TaxType::class);
     }
 
-    /**
-     * Determine whether the user can view the model.
-     *
-     * @return mixed
-     */
     public function view(User $user, TaxType $taxType): bool
     {
-        if (BouncerFacade::can('view-tax-type', $taxType) && $user->hasCompany($taxType->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-tax-type', $taxType) && $this->sameCompany($user, $taxType);
     }
 
-    /**
-     * Determine whether the user can create models.
-     *
-     * @return mixed
-     */
     public function create(User $user): bool
     {
-        if (BouncerFacade::can('create-tax-type', TaxType::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('create-tax-type', TaxType::class);
     }
 
-    /**
-     * Determine whether the user can update the model.
-     *
-     * @return mixed
-     */
     public function update(User $user, TaxType $taxType): bool
     {
-        if (BouncerFacade::can('edit-tax-type', $taxType) && $user->hasCompany($taxType->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('edit-tax-type', $taxType) && $this->sameCompany($user, $taxType);
     }
 
-    /**
-     * Determine whether the user can delete the model.
-     *
-     * @return mixed
-     */
     public function delete(User $user, TaxType $taxType): bool
     {
-        if (BouncerFacade::can('delete-tax-type', $taxType) && $user->hasCompany($taxType->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $taxType);
     }
 
     /**
-     * Determine whether the user can restore the model.
-     *
-     * @return mixed
+     * Restoring and erasing are governed by the delete ability as well; tax
+     * types are not soft-deleted, so neither is reachable in practice.
      */
     public function restore(User $user, TaxType $taxType): bool
     {
-        if (BouncerFacade::can('delete-tax-type', $taxType) && $user->hasCompany($taxType->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $taxType);
     }
 
-    /**
-     * Determine whether the user can permanently delete the model.
-     *
-     * @return mixed
-     */
     public function forceDelete(User $user, TaxType $taxType): bool
     {
-        if (BouncerFacade::can('delete-tax-type', $taxType) && $user->hasCompany($taxType->company_id)) {
-            return true;
-        }
+        return $this->mayRemove($user, $taxType);
+    }
 
-        return false;
+    private function mayRemove(User $user, TaxType $taxType): bool
+    {
+        return BouncerFacade::can('delete-tax-type', $taxType) && $this->sameCompany($user, $taxType);
+    }
+
+    private function sameCompany(User $user, TaxType $taxType): bool
+    {
+        return $user->hasCompany($taxType->company_id);
     }
 }

@@ -10,6 +10,6 @@ class MoneyExpenseExchangeRateRecorder implements ExpenseExchangeRateRecorder
 {
     public function record(Expense $expense): void
     {
-        ExchangeRateLog::addExchangeRateLog($expense);
+        ExchangeRateLog::addExchangeRateLog(model: $expense);
     }
 }

@@ -7,10 +7,20 @@ use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\Rule;
 
+/**
+ * Validates the signed-in account editing its own profile.
+ *
+ * A display name is the only thing genuinely demanded. The password field is
+ * optional, so a form saved with it left alone keeps the hash already on file,
+ * and the address has to stay unique installation-wide with the caller's own
+ * row stepped over — otherwise re-saving an unchanged form would collide with
+ * itself.
+ */
 class ProfileRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * Everyone signed in may edit their own profile; there is no target to
+     * weigh up, so the gate is open.
      */
     public function authorize(): bool
     {
@@ -18,18 +28,13 @@ class ProfileRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * @return array<string, array<int, mixed>>
      */
     public function rules(): array
     {
         return [
-            'name' => [
-                'required',
-            ],
-            'password' => [
-                'nullable',
-                'min:8',
-            ],
+            'name' => ['required'],
+            'password' => ['nullable', 'min:8'],
             'email' => [
                 'required',
                 new IdnEmail,

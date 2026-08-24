@@ -9,10 +9,16 @@ use App\Domains\Contacts\Http\Resources\CustomerResource;
 use App\Domains\Contacts\Models\Customer;
 use App\Domains\Reporting\Queries\CustomerStatementQuery;
 use App\Platform\Http\Controller;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Pagination\LengthAwarePaginator;
 
+/**
+ * Admin-side CRUD over the contacts of the active company.
+ *
+ * Nothing is decided here: the form request shapes the payload, the service
+ * owns every write, and the statement query decorates whatever is about to be
+ * serialised with the receivable figures the SPA prints beside each contact.
+ */
 class CustomersController extends Controller
 {
     public function __construct(
@@ -21,106 +27,127 @@ class CustomersController extends Controller
     ) {}
 
     /**
-     * Display a listing of the resource.
+     * A page of contacts, plus the company-wide head count in the envelope.
      *
-     * @return JsonResponse
+     * Clause order below is load-bearing. The tenancy clause has to reach the
+     * builder before the filters do, because the `customer_id` filter joins
+     * itself on with OR — behind the filters it would be swallowed by that OR
+     * and the page would leak rows from other companies. Kept as it stands.
+     *
+     * Page size defaults to ten; the literal `limit=all` makes the paginate
+     * scope return a plain collection rather than a paginator.
      */
     public function index(Request $request)
     {
         $this->authorize('viewAny', Customer::class);
 
-        $limit = $request->has('limit') ? $request->limit : 10;
+        $perPage = $request->has('limit') ? $request->limit : 10;
+        $filters = $request->all();
 
-        $customers = Customer::with('creator')
+        $customers = Customer::query()
+            ->with('creator')
             ->whereCompany()
-            ->applyFilters($request->all())
-            ->paginateData($limit);
+            ->applyFilters($filters)
+            ->paginateData($perPage);
 
-        $this->customerStatementQuery->hydrateAccountSummaries(
-            $customers instanceof LengthAwarePaginator ? $customers->getCollection() : $customers
-        );
+        $this->withAccountSummaries($customers);
 
-        return CustomerResource::collection($customers)
-            ->additional(['meta' => [
-                'customer_total_count' => Customer::whereCompany()->count(),
-            ]]);
+        $companyTotal = Customer::whereCompany()->count();
+
+        return CustomerResource::collection($customers)->additional([
+            'meta' => ['customer_total_count' => $companyTotal],
+        ]);
     }
 
     /**
-     * Store a newly created resource in storage.
+     * File a new contact.
      *
-     * @param  Request  $request
-     * @return JsonResponse
+     * Address blocks and custom-field values ride along inside the service's
+     * transaction; the request object decides whether either was supplied.
      */
     public function store(CustomerRequest $request)
     {
         $this->authorize('create', Customer::class);
 
-        $customer = $this->customerService->create(
-            attributes: $request->customerAttributes(),
-            shippingAddress: $request->shippingAddress(),
-            billingAddress: $request->billingAddress(),
-            customFields: $request->customFields(),
+        $created = $this->customerService->create(
+            $request->customerAttributes(),
+            $request->shippingAddress(),
+            $request->billingAddress(),
+            $request->customFields(),
         );
-        $this->customerStatementQuery->hydrateAccountSummaries([$customer]);
 
-        return new CustomerResource($customer);
+        $this->withAccountSummaries([$created]);
+
+        return new CustomerResource($created);
     }
 
-    /**
-     * Display the specified resource.
-     *
-     * @return JsonResponse
-     */
     public function show(Customer $customer)
     {
         $this->authorize('view', $customer);
 
-        $this->customerStatementQuery->hydrateAccountSummaries([$customer]);
+        $this->withAccountSummaries([$customer]);
 
         return new CustomerResource($customer);
     }
 
     /**
-     * Update the specified resource in storage.
+     * Overwrite a contact.
      *
-     * @param  Request  $request
-     * @return JsonResponse
+     * Two rules live in the service rather than the request: a currency change
+     * is refused once any document exists, and the address rows are replaced
+     * wholesale — so an update carrying no address block at all leaves the
+     * contact with none.
      */
     public function update(CustomerRequest $request, Customer $customer)
     {
         $this->authorize('update', $customer);
 
-        $customer = $this->customerService->update(
-            customer: $customer,
-            attributes: $request->customerAttributes(),
-            shippingAddress: $request->shippingAddress(),
-            billingAddress: $request->billingAddress(),
-            customFields: $request->customFields(),
+        $saved = $this->customerService->update(
+            $customer,
+            $request->customerAttributes(),
+            $request->shippingAddress(),
+            $request->billingAddress(),
+            $request->customFields(),
         );
-        $this->customerStatementQuery->hydrateAccountSummaries([$customer]);
 
-        return new CustomerResource($customer);
+        $this->withAccountSummaries([$saved]);
+
+        return new CustomerResource($saved);
     }
 
     /**
-     * Remove a list of Customers along side all their resources (ie. Estimates, Invoices, Payments and Addresses)
+     * Erase a batch of contacts together with everything filed against them —
+     * estimates, invoices, payments, expenses, recurring invoices, addresses —
+     * in a single transaction.
      *
-     * @param  Request  $request
-     * @return JsonResponse
+     * The submitted ids were checked against the customers table globally, but
+     * are narrowed to the active company here, so an id belonging to somebody
+     * else clears validation and is then quietly dropped from the batch.
      */
     public function delete(DeleteCustomersRequest $request)
     {
         $this->authorize('delete multiple customers');
 
-        $ids = Customer::whereCompany()
-            ->whereIn('id', $request->ids)
-            ->pluck('id');
+        $targets = Customer::whereCompany()->whereIn('id', $request->ids)->pluck('id');
 
-        $this->customerService->delete($ids);
+        $this->customerService->delete($targets);
 
-        return response()->json([
-            'success' => true,
-        ]);
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Hang the account summaries on the models that are about to be rendered.
+     *
+     * A paginator cannot be handed over as-is: cast to an array it yields the
+     * envelope, not the rows. Everything else — a collection, or a one-element
+     * array wrapping a single model — goes straight through.
+     */
+    private function withAccountSummaries(mixed $customers): void
+    {
+        if ($customers instanceof LengthAwarePaginator) {
+            $customers = $customers->getCollection();
+        }
+
+        $this->customerStatementQuery->hydrateAccountSummaries($customers);
     }
 }

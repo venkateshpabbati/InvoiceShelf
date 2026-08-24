@@ -10,19 +10,20 @@ use InvoiceShelf\Modules\Registry;
 class ConfigController extends Controller
 {
     /**
-     * Handle the incoming request.
+     * Hand the SPA one value out of the application configuration.
+     *
+     * Exchange-rate drivers are assembled at runtime rather than read from a
+     * config file, so that key takes its own path.
      */
     public function __invoke(Request $request): JsonResponse
     {
-        if ($request->key === 'exchange_rate_drivers') {
-            return response()->json([
-                'exchange_rate_drivers' => $this->exchangeRateDrivers(),
-            ]);
+        $key = $request->key;
+
+        if ($key === 'exchange_rate_drivers') {
+            return response()->json(['exchange_rate_drivers' => $this->exchangeRateDrivers()]);
         }
 
-        return response()->json([
-            $request->key => config('invoiceshelf.'.$request->key),
-        ]);
+        return response()->json([$key => config('invoiceshelf.'.$key)]);
     }
 
     /**

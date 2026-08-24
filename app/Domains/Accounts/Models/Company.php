@@ -29,19 +29,18 @@ use Silber\Bouncer\Database\Role;
 use Spatie\MediaLibrary\HasMedia;
 use Spatie\MediaLibrary\InteractsWithMedia;
 
+/**
+ * A tenant.
+ *
+ * Nearly every record in the application hangs off a company, and the roles
+ * that grant access to those records are scoped to the company's id.
+ */
 class Company extends Model implements HasMedia
 {
-    protected $table = 'companies';
-
     use HasFactory;
     use InteractsWithMedia;
 
-    public function registerMediaCollections(): void
-    {
-        $this->addMediaCollection('logo')
-            ->useDisk('public')
-            ->singleFile();
-    }
+    protected $table = 'companies';
 
     protected $guarded = [
         'id',
@@ -49,153 +48,256 @@ class Company extends Model implements HasMedia
 
     protected $appends = ['logo', 'logo_path'];
 
-    public function getRolesAttribute()
+    /**
+     * A company keeps a single branding image on the public disk.
+     */
+    public function registerMediaCollections(): void
     {
-        return Role::where('scope', $this->id)
-            ->get();
+        $this->addMediaCollection('logo')->useDisk('public')->singleFile();
     }
 
-    public function getLogoPathAttribute()
-    {
-        $logo = $this->getMedia('logo')->first();
+    /*
+    |--------------------------------------------------------------------------
+    | Relationships
+    |--------------------------------------------------------------------------
+    */
 
-        $isSystem = FileDisk::whereSetAsDefault(true)->first()->isSystem();
-
-        if ($logo) {
-            if ($isSystem) {
-                return $logo->getPath();
-            } else {
-                return $logo->getFullUrl();
-            }
-        }
-
-        return null;
-    }
-
-    public function getLogoAttribute()
-    {
-        $logo = $this->getMedia('logo')->first();
-
-        if ($logo) {
-            return $logo->getFullUrl();
-        }
-
-        return null;
-    }
-
-    public function customers(): HasMany
-    {
-        return $this->hasMany(Customer::class);
-    }
-
+    /**
+     * The account holding positional ownership of this company.
+     */
     public function owner(): BelongsTo
     {
         return $this->belongsTo(User::class, 'owner_id');
     }
 
-    public function settings(): HasMany
-    {
-        return $this->hasMany(CompanySetting::class);
-    }
-
-    public function recurringInvoices(): HasMany
-    {
-        return $this->hasMany(RecurringInvoice::class);
-    }
-
-    public function customFields(): HasMany
-    {
-        return $this->hasMany(CustomField::class);
-    }
-
-    public function customFieldValues(): HasMany
-    {
-        return $this->hasMany(CustomFieldValue::class);
-    }
-
-    public function exchangeRateLogs(): HasMany
-    {
-        return $this->hasMany(ExchangeRateLog::class);
-    }
-
-    public function exchangeRateProviders(): HasMany
-    {
-        return $this->hasMany(ExchangeRateProvider::class);
-    }
-
-    public function invoices(): HasMany
-    {
-        return $this->hasMany(Invoice::class);
-    }
-
-    public function expenses(): HasMany
-    {
-        return $this->hasMany(Expense::class);
-    }
-
-    public function units(): HasMany
-    {
-        return $this->hasMany(Unit::class);
-    }
-
-    public function expenseCategories(): HasMany
-    {
-        return $this->hasMany(ExpenseCategory::class);
-    }
-
-    public function taxTypes(): HasMany
-    {
-        return $this->hasMany(TaxType::class);
-    }
-
-    public function items(): HasMany
-    {
-        return $this->hasMany(Item::class);
-    }
-
-    public function payments(): HasMany
-    {
-        return $this->hasMany(Payment::class);
-    }
-
-    public function paymentMethods(): HasMany
-    {
-        return $this->hasMany(PaymentMethod::class);
-    }
-
-    public function estimates(): HasMany
-    {
-        return $this->hasMany(Estimate::class);
-    }
-
-    public function address(): HasOne
-    {
-        return $this->hasOne(Address::class);
-    }
-
+    /**
+     * Every account with a membership in this company.
+     */
     public function users(): BelongsToMany
     {
         return $this->belongsToMany(User::class, 'user_company', 'company_id', 'user_id');
     }
 
     /**
-     * Check whether the company has any business data such as customers,
-     * items, invoices, estimates, expenses, payments, or recurring invoices.
+     * The postal address printed on this company's documents.
+     */
+    public function address(): HasOne
+    {
+        return $this->hasOne(Address::class);
+    }
+
+    /**
+     * Per-company preference rows, addressed by their `option` column.
+     */
+    public function settings(): HasMany
+    {
+        return $this->hasMany(CompanySetting::class);
+    }
+
+    /**
+     * Contacts filed under this company.
+     */
+    public function customers(): HasMany
+    {
+        return $this->hasMany(Customer::class);
+    }
+
+    /**
+     * Catalog entries filed under this company.
+     */
+    public function items(): HasMany
+    {
+        return $this->hasMany(Item::class);
+    }
+
+    /**
+     * Units of measure available to this company's catalog.
+     */
+    public function units(): HasMany
+    {
+        return $this->hasMany(Unit::class);
+    }
+
+    /**
+     * Tax rates this company can apply.
+     */
+    public function taxTypes(): HasMany
+    {
+        return $this->hasMany(TaxType::class);
+    }
+
+    /**
+     * Invoices issued by this company.
+     */
+    public function invoices(): HasMany
+    {
+        return $this->hasMany(Invoice::class);
+    }
+
+    /**
+     * Estimates issued by this company.
+     */
+    public function estimates(): HasMany
+    {
+        return $this->hasMany(Estimate::class);
+    }
+
+    /**
+     * Recurring invoice schedules owned by this company.
+     */
+    public function recurringInvoices(): HasMany
+    {
+        return $this->hasMany(RecurringInvoice::class);
+    }
+
+    /**
+     * Payments received by this company.
+     */
+    public function payments(): HasMany
+    {
+        return $this->hasMany(Payment::class);
+    }
+
+    /**
+     * Ways this company accepts being paid.
+     */
+    public function paymentMethods(): HasMany
+    {
+        return $this->hasMany(PaymentMethod::class);
+    }
+
+    /**
+     * Expenses booked against this company.
+     */
+    public function expenses(): HasMany
+    {
+        return $this->hasMany(Expense::class);
+    }
+
+    /**
+     * Buckets this company sorts its expenses into.
+     */
+    public function expenseCategories(): HasMany
+    {
+        return $this->hasMany(ExpenseCategory::class);
+    }
+
+    /**
+     * Custom field definitions declared by this company.
+     */
+    public function customFields(): HasMany
+    {
+        return $this->hasMany(CustomField::class);
+    }
+
+    /**
+     * Answers recorded for this company's custom fields.
+     */
+    public function customFieldValues(): HasMany
+    {
+        return $this->hasMany(CustomFieldValue::class);
+    }
+
+    /**
+     * Recorded exchange rate lookups for this company.
+     */
+    public function exchangeRateLogs(): HasMany
+    {
+        return $this->hasMany(ExchangeRateLog::class);
+    }
+
+    /**
+     * Configured exchange rate sources for this company.
+     */
+    public function exchangeRateProviders(): HasMany
+    {
+        return $this->hasMany(ExchangeRateProvider::class);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Accessors
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * The roles defined inside this company's authorization scope.
+     */
+    public function getRolesAttribute()
+    {
+        return Role::query()->where('scope', $this->id)->get();
+    }
+
+    /**
+     * Publicly reachable address of the branding image, null when none is
+     * attached.
+     */
+    public function getLogoAttribute()
+    {
+        $logo = $this->logoMedia();
+
+        return $logo ? $logo->getFullUrl() : null;
+    }
+
+    /**
+     * Where the branding image lives.
+     *
+     * A local filesystem path while the default file disk is a system disk,
+     * and a public address for every other kind of disk - the asymmetry is
+     * deliberate, PDF rendering needs the path and the SPA needs the address.
+     * The default disk is resolved whether or not an image is attached.
+     */
+    public function getLogoPathAttribute()
+    {
+        $logo = $this->logoMedia();
+
+        $isSystem = FileDisk::query()->where('set_as_default', true)->first()->isSystem();
+
+        if (! $logo) {
+            return null;
+        }
+
+        return $isSystem ? $logo->getPath() : $logo->getFullUrl();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Helpers
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Whether any business record has been filed under this company yet.
+     *
+     * Contacts, catalog entries, invoices, estimates, expenses, payments and
+     * recurring schedules all count; the first one found ends the search.
      */
     public function hasTransactions(): bool
     {
-        if (
-            $this->customers()->exists() ||
-            $this->items()->exists() ||
-            $this->invoices()->exists() ||
-            $this->estimates()->exists() ||
-            $this->expenses()->exists() ||
-            $this->payments()->exists() ||
-            $this->recurringInvoices()->exists()
-        ) {
-            return true;
+        $ledgers = [
+            'customers',
+            'items',
+            'invoices',
+            'estimates',
+            'expenses',
+            'payments',
+            'recurringInvoices',
+        ];
+
+        foreach ($ledgers as $ledger) {
+            if ($this->{$ledger}()->exists()) {
+                return true;
+            }
         }
 
         return false;
+    }
+
+    /**
+     * The one media row behind the branding collection, if there is one.
+     */
+    private function logoMedia()
+    {
+        return $this->getMedia('logo')->first();
     }
 }

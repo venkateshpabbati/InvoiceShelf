@@ -7,119 +7,79 @@ use App\Domains\Contacts\Models\Customer;
 use Illuminate\Auth\Access\HandlesAuthorization;
 use Silber\Bouncer\BouncerFacade;
 
+/**
+ * Who may work with contacts.
+ *
+ * Every answer has two halves: the Bouncer ability, and — whenever an existing
+ * row is named — membership of the company that row belongs to, so an ability
+ * granted inside one company never reaches another company's contacts.
+ *
+ * Bouncer answers for the user it currently has scoped, not for the $user
+ * passed in; that argument feeds the membership half only.
+ */
 class CustomerPolicy
 {
     use HandlesAuthorization;
 
-    /**
-     * Determine whether the user can view any models.
-     *
-     * @return mixed
-     */
     public function viewAny(User $user): bool
     {
-        if (BouncerFacade::can('view-customer', Customer::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-customer', Customer::class);
     }
 
-    /**
-     * Determine whether the user can view the model.
-     *
-     * @return mixed
-     */
     public function view(User $user, Customer $customer): bool
     {
-        if (BouncerFacade::can('view-customer', $customer) && $user->hasCompany($customer->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-customer', $customer) && $this->sameCompany($user, $customer);
     }
 
-    /**
-     * Determine whether the user can create models.
-     *
-     * @return mixed
-     */
     public function create(User $user): bool
     {
-        if (BouncerFacade::can('create-customer', Customer::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('create-customer', Customer::class);
     }
 
-    /**
-     * Determine whether the user can update the model.
-     *
-     * @return mixed
-     */
     public function update(User $user, Customer $customer): bool
     {
-        if (BouncerFacade::can('edit-customer', $customer) && $user->hasCompany($customer->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('edit-customer', $customer) && $this->sameCompany($user, $customer);
     }
 
-    /**
-     * Determine whether the user can delete the model.
-     *
-     * @return mixed
-     */
     public function delete(User $user, Customer $customer): bool
     {
-        if (BouncerFacade::can('delete-customer', $customer) && $user->hasCompany($customer->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $customer);
     }
 
     /**
-     * Determine whether the user can restore the model.
-     *
-     * @return mixed
+     * Contacts are not soft-deleted, so neither restoring nor erasing is
+     * reachable; both defer to the delete ability regardless.
      */
     public function restore(User $user, Customer $customer): bool
     {
-        if (BouncerFacade::can('delete-customer', $customer) && $user->hasCompany($customer->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $customer);
     }
 
-    /**
-     * Determine whether the user can permanently delete the model.
-     *
-     * @return mixed
-     */
     public function forceDelete(User $user, Customer $customer): bool
     {
-        if (BouncerFacade::can('delete-customer', $customer) && $user->hasCompany($customer->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $customer);
     }
 
     /**
-     * Determine whether the user can delete models.
+     * Batch removal. Class-level, so there is no company half to check.
      *
-     * @return mixed
+     * Unused in practice: the bulk endpoint authorises the bare "delete
+     * multiple customers" ability string, which Bouncer settles before the
+     * gate ever looks for a policy method. Left in place, missing return type
+     * included.
      */
     public function deleteMultiple(User $user)
     {
-        if (BouncerFacade::can('delete-customer', Customer::class)) {
-            return true;
-        }
+        return BouncerFacade::can('delete-customer', Customer::class);
+    }
 
-        return false;
+    private function mayRemove(User $user, Customer $customer): bool
+    {
+        return BouncerFacade::can('delete-customer', $customer) && $this->sameCompany($user, $customer);
+    }
+
+    private function sameCompany(User $user, Customer $customer): bool
+    {
+        return $user->hasCompany($customer->company_id);
     }
 }

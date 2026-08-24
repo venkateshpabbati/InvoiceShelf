@@ -5,26 +5,21 @@ namespace App\Platform\Storage\Rules;
 use Closure;
 use Illuminate\Contracts\Validation\ValidationRule;
 
+/**
+ * Accepts only a disk name that is present in the filesystem configuration.
+ */
 class FilesystemDisks implements ValidationRule
 {
-    /**
-     * Create a new rule instance.
-     *
-     * @return void
-     */
-    public function __construct()
-    {
-        // Initialization, if needed
-    }
+    public function __construct() {}
 
     /**
-     * Run the validation rule.
+     * Reject anything that is not a registered filesystem disk.
      */
     public function validate(string $attribute, mixed $value, Closure $fail): void
     {
-        $configuredFileSystemDisks = array_keys(config('filesystems.disks'));
+        $registered = array_keys(config('filesystems.disks'));
 
-        if (! in_array($value, $configuredFileSystemDisks)) {
+        if (! in_array($value, $registered)) {
             $fail('This disk is not configured as a filesystem disk.');
         }
     }

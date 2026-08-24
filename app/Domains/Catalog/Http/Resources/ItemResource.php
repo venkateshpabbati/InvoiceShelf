@@ -8,6 +8,15 @@ use App\Domains\Taxation\Http\Resources\TaxResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
+/**
+ * The admin payload for a catalogue item.
+ *
+ * Each nested block is emitted only when its relation actually resolves, so
+ * consumers must treat all four as optional: an item with no taxes carries no
+ * `taxes` key at all rather than an empty list, and the same goes for an item
+ * without a unit. The presence test asks the database directly, which costs
+ * one existence query per relation per serialised row.
+ */
 class ItemResource extends JsonResource
 {
     /**
@@ -30,18 +39,22 @@ class ItemResource extends JsonResource
             'updated_at' => $this->updated_at,
             'tax_per_item' => $this->tax_per_item,
             'formatted_created_at' => $this->formattedCreatedAt,
-            'unit' => $this->when($this->unit()->exists(), function () {
-                return new UnitResource($this->unit);
-            }),
-            'company' => $this->when($this->company()->exists(), function () {
-                return new CompanyResource($this->company);
-            }),
-            'taxes' => $this->when($this->taxes()->exists(), function () {
-                return TaxResource::collection($this->taxes);
-            }),
-            'currency' => $this->when($this->currency()->exists(), function () {
-                return new CurrencyResource($this->currency);
-            }),
+            'unit' => $this->when(
+                $this->unit()->exists(),
+                fn () => new UnitResource($this->unit)
+            ),
+            'company' => $this->when(
+                $this->company()->exists(),
+                fn () => new CompanyResource($this->company)
+            ),
+            'taxes' => $this->when(
+                $this->taxes()->exists(),
+                fn () => TaxResource::collection($this->taxes)
+            ),
+            'currency' => $this->when(
+                $this->currency()->exists(),
+                fn () => new CurrencyResource($this->currency)
+            ),
         ];
     }
 }

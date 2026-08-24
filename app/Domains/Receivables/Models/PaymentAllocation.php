@@ -23,13 +23,19 @@ class PaymentAllocation extends Model
         ];
     }
 
+    /**
+     * The receipt this slice was taken out of.
+     */
     public function payment(): BelongsTo
     {
-        return $this->belongsTo(Payment::class);
+        return $this->belongsTo(Payment::class, 'payment_id');
     }
 
+    /**
+     * The document this slice was booked against.
+     */
     public function invoice(): BelongsTo
     {
-        return $this->belongsTo(Invoice::class);
+        return $this->belongsTo(Invoice::class, 'invoice_id');
     }
 }

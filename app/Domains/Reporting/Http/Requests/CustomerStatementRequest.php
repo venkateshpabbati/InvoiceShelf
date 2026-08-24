@@ -10,7 +10,9 @@ use Illuminate\Validation\Rule;
 class CustomerStatementRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * Nothing is decided here: the controller weighs the customer and the
+     * report ability before any statement is drawn up, which leaves this
+     * class to shape and default the parameters it is handed.
      */
     public function authorize(): bool
     {
@@ -18,7 +20,7 @@ class CustomerStatementRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * Which statement is wanted, over which window, and how much of it.
      *
      * @return array<string, mixed>
      */

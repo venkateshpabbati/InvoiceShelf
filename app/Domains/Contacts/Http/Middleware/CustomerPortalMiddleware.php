@@ -3,29 +3,35 @@
 namespace App\Domains\Contacts\Http\Middleware;
 
 use Closure;
-use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 use Symfony\Component\HttpFoundation\Response;
 
+/**
+ * Re-reads the portal switch on every authenticated portal request.
+ *
+ * It sits behind `auth:customer`, so a session already exists by the time it
+ * runs; what it adds is revocation. Turning a contact's portal access off
+ * ends their session on their very next call, not at their next sign-in.
+ */
 class CustomerPortalMiddleware
 {
     /**
-     * Handle an incoming request.
+     * Let the request through only while portal access is still granted.
      *
-     * @param  Closure(Request): (\Illuminate\Http\Response|RedirectResponse)  $next
-     * @return \Illuminate\Http\Response|RedirectResponse
+     * @param  Closure(Request): Response  $next
      */
     public function handle(Request $request, Closure $next): Response
     {
-        $user = Auth::guard('customer')->user();
+        $portal = auth()->guard('customer');
 
-        if (! $user->enable_portal) {
-            Auth::guard('customer')->logout();
-
-            return response('Unauthorized.', 401);
+        if ($portal->user()->enable_portal) {
+            return $next($request);
         }
 
-        return $next($request);
+        // Access was withdrawn mid-session: tear the session down too, so the
+        // SPA lands back on the login form instead of retrying.
+        $portal->logout();
+
+        return response('Unauthorized.', Response::HTTP_UNAUTHORIZED);
     }
 }

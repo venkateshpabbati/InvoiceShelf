@@ -9,12 +9,9 @@ class EloquentMemberReferencesCleaner implements MemberReferencesCleaner
 {
     public function clear(User $user): void
     {
-        $user->invoices()->update(['creator_id' => null]);
-        $user->estimates()->update(['creator_id' => null]);
-        $user->customers()->update(['creator_id' => null]);
-        $user->recurringInvoices()->update(['creator_id' => null]);
-        $user->expenses()->update(['creator_id' => null]);
-        $user->payments()->update(['creator_id' => null]);
-        $user->items()->update(['creator_id' => null]);
+        $authored = ['invoices', 'estimates', 'customers', 'recurringInvoices', 'expenses', 'payments', 'items'];
+        foreach ($authored as $relation) {
+            $user->{$relation}()->update(['creator_id' => null]);
+        }
     }
 }

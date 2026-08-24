@@ -5,122 +5,87 @@ namespace App\Domains\Sales\Policies;
 use App\Domains\Accounts\Models\User;
 use App\Domains\Sales\Models\RecurringInvoice;
 use Illuminate\Auth\Access\HandlesAuthorization;
-use Illuminate\Auth\Access\Response;
 use Silber\Bouncer\BouncerFacade;
 
+/**
+ * Who may work with recurring-invoice templates.
+ *
+ * Every decision has two halves: the Bouncer ability, and — for anything
+ * aimed at an existing template — membership of the company that template
+ * belongs to, so an ability held in one company never reaches another
+ * company's data.
+ *
+ * Bouncer answers for the user it currently has scoped, not for the $user
+ * handed in; that argument only feeds the membership half.
+ *
+ * There is no sending here: a template is never mailed, only the invoices it
+ * generates are.
+ */
 class RecurringInvoicePolicy
 {
     use HandlesAuthorization;
 
-    /**
-     * Determine whether the user can view any models.
-     *
-     * @return Response|bool
-     */
     public function viewAny(User $user): bool
     {
-        if (BouncerFacade::can('view-recurring-invoice', RecurringInvoice::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-recurring-invoice', RecurringInvoice::class);
     }
 
-    /**
-     * Determine whether the user can view the model.
-     *
-     * @return Response|bool
-     */
     public function view(User $user, RecurringInvoice $recurringInvoice): bool
     {
-        if (BouncerFacade::can('view-recurring-invoice', $recurringInvoice) && $user->hasCompany($recurringInvoice->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-recurring-invoice', $recurringInvoice)
+            && $this->sameCompany($user, $recurringInvoice);
     }
 
-    /**
-     * Determine whether the user can create models.
-     *
-     * @return Response|bool
-     */
     public function create(User $user): bool
     {
-        if (BouncerFacade::can('create-recurring-invoice', RecurringInvoice::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('create-recurring-invoice', RecurringInvoice::class);
     }
 
-    /**
-     * Determine whether the user can update the model.
-     *
-     * @return Response|bool
-     */
     public function update(User $user, RecurringInvoice $recurringInvoice): bool
     {
-        if (BouncerFacade::can('edit-recurring-invoice', $recurringInvoice) && $user->hasCompany($recurringInvoice->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('edit-recurring-invoice', $recurringInvoice)
+            && $this->sameCompany($user, $recurringInvoice);
     }
 
-    /**
-     * Determine whether the user can delete the model.
-     *
-     * @return Response|bool
-     */
     public function delete(User $user, RecurringInvoice $recurringInvoice): bool
     {
-        if (BouncerFacade::can('delete-recurring-invoice', $recurringInvoice) && $user->hasCompany($recurringInvoice->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $recurringInvoice);
     }
 
     /**
-     * Determine whether the user can restore the model.
-     *
-     * @return Response|bool
+     * Restoring and erasing answer to the delete ability as well; templates
+     * are not soft-deleted, so neither is reachable in practice.
      */
     public function restore(User $user, RecurringInvoice $recurringInvoice): bool
     {
-        if (BouncerFacade::can('delete-recurring-invoice', $recurringInvoice) && $user->hasCompany($recurringInvoice->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $recurringInvoice);
     }
 
-    /**
-     * Determine whether the user can permanently delete the model.
-     *
-     * @return Response|bool
-     */
     public function forceDelete(User $user, RecurringInvoice $recurringInvoice): bool
     {
-        if (BouncerFacade::can('delete-recurring-invoice', $recurringInvoice) && $user->hasCompany($recurringInvoice->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $recurringInvoice);
     }
 
     /**
-     * Determine whether the user can delete models.
+     * The bulk-delete gate. It is handed no template, so only the ability half
+     * applies and nothing here confines it to one company — the endpoint does
+     * that itself when it resolves the ids.
      *
      * @return mixed
      */
     public function deleteMultiple(User $user)
     {
-        if (BouncerFacade::can('delete-recurring-invoice', RecurringInvoice::class)) {
-            return true;
-        }
+        return BouncerFacade::can('delete-recurring-invoice', RecurringInvoice::class);
+    }
 
-        return false;
+    private function mayRemove(User $user, RecurringInvoice $recurringInvoice): bool
+    {
+        return BouncerFacade::can('delete-recurring-invoice', $recurringInvoice)
+            && $this->sameCompany($user, $recurringInvoice);
+    }
+
+    private function sameCompany(User $user, RecurringInvoice $recurringInvoice): bool
+    {
+        return $user->hasCompany($recurringInvoice->company_id);
     }
 }

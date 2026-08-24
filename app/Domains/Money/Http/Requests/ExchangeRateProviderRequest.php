@@ -7,58 +7,40 @@ use Illuminate\Foundation\Http\FormRequest;
 
 class ExchangeRateProviderRequest extends FormRequest
 {
-    /**
-     * Determine if the user is authorized to make this request.
-     */
     public function authorize(): bool
     {
         return true;
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * @return array<string, array<int, mixed>>
      */
     public function rules(): array
     {
-        $rules = [
-            'driver' => [
-                'required',
-            ],
-            'key' => [
-                'required',
-            ],
-            'currencies' => [
-                'nullable',
-            ],
-            'currencies.*' => [
-                'nullable',
-            ],
-            'driver_config' => [
-                'nullable',
-            ],
-            // Only the CurrencyConverter "DEDICATED" plan reads a custom URL from
-            // driver_config; guard it against SSRF (private/reserved targets).
-            'driver_config.url' => [
-                'nullable',
-                'string',
-                'url',
-                new PublicHttpUrl,
-            ],
-            'active' => [
-                'nullable',
-                'boolean',
-            ],
-        ];
+        return [
+            'driver' => ['required'],
+            'key' => ['required'],
+            'currencies' => ['nullable'],
+            'currencies.*' => ['nullable'],
+            'driver_config' => ['nullable'],
 
-        return $rules;
+            // A dedicated CurrencyConverter plan lets the operator name the
+            // endpoint we then call with their key: keep it off private and
+            // otherwise non-routable hosts on top of the syntax check.
+            'driver_config.url' => ['nullable', 'string', 'url', new PublicHttpUrl],
+
+            'active' => ['nullable', 'boolean'],
+        ];
     }
 
+    /**
+     * Validated attributes with the company taken from the request context —
+     * a client-supplied company_id is never honoured.
+     */
     public function getExchangeRateProviderPayload()
     {
         return collect($this->validated())
-            ->merge([
-                'company_id' => $this->header('company'),
-            ])
+            ->merge(['company_id' => $this->header('company')])
             ->toArray();
     }
 }

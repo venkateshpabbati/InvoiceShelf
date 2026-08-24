@@ -4,10 +4,19 @@ namespace App\Domains\Catalog\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
 
+/**
+ * Incoming payload for creating or editing a catalog item.
+ *
+ * Only what describes the item is taken from the client. The owning company,
+ * the creator and the currency are stamped from the request context further
+ * down, so they are absent from the rules and never survive validation even
+ * when a client sends them. Item taxes ride along outside these rules and are
+ * read straight off the request by the controller.
+ */
 class ItemsRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * Access is settled by the item policy in the controller.
      */
     public function authorize(): bool
     {
@@ -15,23 +24,19 @@ class ItemsRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * Presence checks only: a name and a price are demanded, the unit and the
+     * description may be left out or sent empty. Nothing is type-checked here,
+     * so the price is whatever the column makes of the submitted value.
+     *
+     * @return array<string, mixed>
      */
     public function rules(): array
     {
         return [
-            'name' => [
-                'required',
-            ],
-            'price' => [
-                'required',
-            ],
-            'unit_id' => [
-                'nullable',
-            ],
-            'description' => [
-                'nullable',
-            ],
+            'name' => ['required'],
+            'price' => ['required'],
+            'unit_id' => ['nullable'],
+            'description' => ['nullable'],
         ];
     }
 }

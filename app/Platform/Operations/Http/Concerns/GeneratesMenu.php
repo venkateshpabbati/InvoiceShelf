@@ -2,29 +2,51 @@
 
 namespace App\Platform\Operations\Http\Concerns;
 
+/**
+ * Flattens a registered navigation tree into the plain arrays the SPA renders.
+ */
 trait GeneratesMenu
 {
+    /**
+     * Read one registered menu and drop every entry this user may not see.
+     *
+     * Visibility itself is decided by the user model; this only asks.
+     */
     public function generateMenu($key, $user)
     {
-        $new_items = [];
+        $navigation = \Menu::get($key);
 
-        $menu = \Menu::get($key);
-        $items = $menu ? $menu->items->toArray() : [];
+        if (! $navigation) {
+            return [];
+        }
 
-        foreach ($items as $data) {
-            if ($user->checkAccess($data)) {
-                $new_items[] = [
-                    'title' => $data->title,
-                    'link' => $data->link->path['url'],
-                    'icon' => $data->data['icon'],
-                    'name' => $data->data['name'],
-                    'group' => $data->data['group'],
-                    'group_label' => $data->data['group_label'] ?? '',
-                    'priority' => $data->data['priority'] ?? 100,
-                ];
+        $visible = [];
+
+        foreach ($navigation->items->toArray() as $entry) {
+            if ($user->checkAccess($entry)) {
+                $visible[] = $this->describeMenuEntry($entry);
             }
         }
 
-        return $new_items;
+        return $visible;
+    }
+
+    /**
+     * One navigation entry in wire shape. Grouping label and ordering weight
+     * are optional in the menu definition, so they fall back here.
+     */
+    private function describeMenuEntry(object $entry): array
+    {
+        $meta = $entry->data;
+
+        return [
+            'title' => $entry->title,
+            'link' => $entry->link->path['url'],
+            'icon' => $meta['icon'],
+            'name' => $meta['name'],
+            'group' => $meta['group'],
+            'group_label' => $meta['group_label'] ?? '',
+            'priority' => $meta['priority'] ?? 100,
+        ];
     }
 }

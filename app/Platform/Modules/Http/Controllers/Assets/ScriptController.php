@@ -13,10 +13,12 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 class ScriptController extends Controller
 {
     /**
-     * Serve the requested module-registered script.
+     * Stream one script that a module published from its ServiceProvider::boot()
+     * through \InvoiceShelf\Modules\Registry::registerScript($name, $path).
      *
-     * Modules call \InvoiceShelf\Modules\Registry::registerScript($name, $path)
-     * from their ServiceProvider::boot() to inject custom JS into the host app.
+     * A "v" query value equal to the hash of the bytes being served earns a
+     * year-long immutable cache; every other request is answered no-store so a
+     * rebuilt asset is never hidden behind a stale copy.
      *
      * @throws NotFoundHttpException
      */
@@ -27,21 +29,20 @@ class ScriptController extends Controller
         abort_if($path === null || ! is_file($path), 404);
 
         $contents = file_get_contents($path);
+
         abort_if(! is_string($contents), 404);
+
         $version = ModuleAssetVersion::forContents($contents);
-        $cacheControl = is_string($request->query('v')) && hash_equals($version, $request->query('v'))
-            ? 'public, max-age=31536000, immutable'
-            : 'no-store';
+        $requested = $request->query('v');
+        $matchesServedBytes = is_string($requested) && hash_equals($version, $requested);
 
-        $response = response(
-            $contents,
-            200,
-            [
-                'Content-Type' => 'application/javascript',
-            ]
-        )->setLastModified(DateTime::createFromFormat('U', (string) filemtime($path)));
+        $response = response($contents, 200, ['Content-Type' => 'application/javascript'])
+            ->setLastModified(DateTime::createFromFormat('U', (string) filemtime($path)));
 
-        $response->headers->set('Cache-Control', $cacheControl);
+        $response->headers->set(
+            'Cache-Control',
+            $matchesServedBytes ? 'public, max-age=31536000, immutable' : 'no-store'
+        );
 
         return $response;
     }

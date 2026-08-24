@@ -31,6 +31,7 @@ class PurchasesServiceProvider extends ServiceProvider
 
         Gate::policy(Expense::class, ExpensePolicy::class);
         Gate::policy(ExpenseCategory::class, ExpenseCategoryPolicy::class);
-        Gate::define('delete multiple expenses', [ExpensePolicy::class, 'deleteMultiple']);
+        $bulkExpenseDelete = [ExpensePolicy::class, 'deleteMultiple'];
+        Gate::define('delete multiple expenses', $bulkExpenseDelete);
     }
 }

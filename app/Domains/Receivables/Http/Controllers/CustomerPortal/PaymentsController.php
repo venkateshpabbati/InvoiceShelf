@@ -13,49 +13,65 @@ use Illuminate\Support\Facades\Auth;
 class PaymentsController extends Controller
 {
     /**
-     * Display a listing of the resource.
+     * Page through the receipts recorded against the signed-in contact.
+     *
+     * Only four of the admin filters reach the model here — the number, the
+     * method and the two ordering knobs. Everything else in the query string
+     * is dropped before the query is built, so the portal cannot be talked
+     * into widening its own view of the books.
      *
      * @return Response
      */
     public function index(Request $request)
     {
-        $limit = $request->has('limit') ? $request->limit : 10;
+        $perPage = 10;
 
-        $payments = Payment::with(['customer', 'allocations.invoice', 'paymentMethod', 'creator'])
-            ->whereCustomer(Auth::guard('customer')->id())
-            ->applyFilters($request->only([
-                'payment_number',
-                'payment_method_id',
-                'orderByField',
-                'orderBy',
-            ]))
+        if ($request->has('limit')) {
+            $perPage = $request->limit;
+        }
+
+        $contact = Auth::guard('customer')->id();
+
+        $narrowing = $request->only([
+            'payment_number',
+            'payment_method_id',
+            'orderByField',
+            'orderBy',
+        ]);
+
+        $page = Payment::with(['customer', 'allocations.invoice', 'paymentMethod', 'creator'])
+            ->whereCustomer($contact)
+            ->applyFilters($narrowing)
             ->select('payments.*')
-            ->latest()
-            ->paginateData($limit);
+            ->orderByDesc('created_at')
+            ->paginateData($perPage);
 
-        return PaymentResource::collection($payments)
-            ->additional(['meta' => [
-                'paymentTotalCount' => Payment::whereCustomer(Auth::guard('customer')->id())->count(),
-            ]]);
+        // Counted afresh instead of taken off the page: the tally covers
+        // everything on file for the contact, filters and paging aside.
+        $recorded = Payment::whereCustomer($contact)->count();
+
+        return PaymentResource::collection($page)->additional([
+            'meta' => ['paymentTotalCount' => $recorded],
+        ]);
     }
 
     /**
-     * Display the specified resource.
+     * Hand back a single receipt, looked up inside the portal's company and
+     * narrowed to the signed-in contact.
      *
-     * @param  Payment  $payment
+     * @param  string  $id
      * @return Response
      */
     public function show(Company $company, $id)
     {
-        $payment = $company->payments()
-            ->whereCustomer(Auth::guard('customer')->id())
-            ->where('id', $id)
-            ->first();
+        $contact = Auth::guard('customer')->id();
 
-        if (! $payment) {
-            return response()->json(['error' => 'payment_not_found'], 404);
+        $payment = $company->payments()->whereCustomer($contact)->where('id', $id)->first();
+
+        if ($payment === null) {
+            return response()->json(['error' => 'payment_not_found'], Response::HTTP_NOT_FOUND);
         }
 
-        return new PaymentResource($payment->load(['allocations.invoice']));
+        return PaymentResource::make($payment->load(['allocations.invoice']));
     }
 }

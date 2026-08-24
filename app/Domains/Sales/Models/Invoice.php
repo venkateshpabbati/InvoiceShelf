@@ -30,33 +30,91 @@ use Nwidart\Modules\Facades\Module;
 use Spatie\MediaLibrary\HasMedia;
 use Spatie\MediaLibrary\InteractsWithMedia;
 
+/**
+ * A billing document raised against a contact.
+ *
+ * One table backs two kinds of document, told apart by the `type` column: an
+ * ordinary invoice, and the credit note that reverses one and therefore carries
+ * negative amounts and a pointer back at its original.
+ *
+ * Two independent axes describe where a document stands. `status` tracks how far
+ * it has travelled towards the customer (draft, sent, viewed, completed) and
+ * `paid_status` tracks the money (unpaid, partially paid, paid). The pair is
+ * re-derived from the outstanding balance every time that balance moves, which
+ * is why the two never have to be set by hand.
+ *
+ * Every monetary column holds integer minor units, and each has a `base_`
+ * counterpart holding the same figure multiplied by the document's exchange
+ * rate, so a company reporting in its own currency never has to re-convert.
+ */
 class Invoice extends Model implements HasMedia
 {
-    protected $table = 'invoices';
-
     use GeneratesPdf;
     use HasCustomFields;
     use HasFactory;
     use InteractsWithMedia;
 
+    /**
+     * Raised but not yet handed to the customer.
+     */
     public const STATUS_DRAFT = 'DRAFT';
 
+    /**
+     * Delivered to the customer.
+     */
     public const STATUS_SENT = 'SENT';
 
+    /**
+     * Opened by the customer through a shared link.
+     */
     public const STATUS_VIEWED = 'VIEWED';
 
+    /**
+     * Settled in full and closed.
+     */
     public const STATUS_COMPLETED = 'COMPLETED';
 
+    /**
+     * Nothing has been collected yet.
+     */
     public const STATUS_UNPAID = 'UNPAID';
 
+    /**
+     * Some of the balance has been collected.
+     */
     public const STATUS_PARTIALLY_PAID = 'PARTIALLY_PAID';
 
+    /**
+     * The whole balance has been collected.
+     */
     public const STATUS_PAID = 'PAID';
 
+    /**
+     * An ordinary, positively signed document.
+     */
     public const TYPE_INVOICE = 'INVOICE';
 
+    /**
+     * A reversal of an earlier document, carrying negative amounts.
+     */
     public const TYPE_CREDIT_NOTE = 'CREDIT_NOTE';
 
+    protected $table = 'invoices';
+
+    /**
+     * Everything but the primary key may be mass assigned.
+     *
+     * @var array
+     */
+    protected $guarded = [
+        'id',
+    ];
+
+    /**
+     * Columns the pre-cast date handling used to hydrate as instances.
+     *
+     * @var array
+     */
     protected $dates = [
         'created_at',
         'updated_at',
@@ -65,10 +123,11 @@ class Invoice extends Model implements HasMedia
         'due_date',
     ];
 
-    protected $guarded = [
-        'id',
-    ];
-
+    /**
+     * Computed attributes, listed in the order they are serialized.
+     *
+     * @var array
+     */
     protected $appends = [
         'formattedCreatedAt',
         'formattedInvoiceDate',
@@ -77,6 +136,14 @@ class Invoice extends Model implements HasMedia
         'invoicePdfUrl',
     ];
 
+    /**
+     * Attribute casts.
+     *
+     * Amounts are whole minor units. The two figures that are genuinely
+     * fractional, the percentage discount and the exchange rate, are floats.
+     * The outstanding balance is deliberately absent: it is written by the
+     * balance helpers below and left in whatever shape the driver hands back.
+     */
     protected function casts(): array
     {
         return [
@@ -89,31 +156,56 @@ class Invoice extends Model implements HasMedia
         ];
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Relationships
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Ledger entries written when the document is settled.
+     */
     public function transactions(): HasMany
     {
         return $this->hasMany(Transaction::class);
     }
 
+    /**
+     * Mail sent about this document.
+     */
     public function emailLogs(): MorphMany
     {
         return $this->morphMany(EmailLog::class, 'mailable');
     }
 
+    /**
+     * Line items, snapshotted from the catalog at the time of writing.
+     */
     public function items(): HasMany
     {
         return $this->hasMany(InvoiceItem::class);
     }
 
+    /**
+     * Document-level applied taxes.
+     */
     public function taxes(): HasMany
     {
         return $this->hasMany(Tax::class);
     }
 
+    /**
+     * Individual slices of payments booked against this document.
+     */
     public function allocations(): HasMany
     {
         return $this->hasMany(PaymentAllocation::class);
     }
 
+    /**
+     * Payments touching this document, with the allocated amounts carried on
+     * the pivot.
+     */
     public function payments(): BelongsToMany
     {
         return $this->belongsToMany(Payment::class, 'payment_allocations')
@@ -121,33 +213,48 @@ class Invoice extends Model implements HasMedia
             ->withTimestamps();
     }
 
+    /**
+     * Currency the document was issued in.
+     */
     public function currency(): BelongsTo
     {
         return $this->belongsTo(Currency::class);
     }
 
+    /**
+     * Company the document was raised under.
+     */
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
     }
 
+    /**
+     * Contact the document was raised for.
+     */
     public function customer(): BelongsTo
     {
         return $this->belongsTo(Customer::class, 'customer_id');
     }
 
+    /**
+     * Schedule that generated this document, when it was not raised by hand.
+     */
     public function recurringInvoice(): BelongsTo
     {
         return $this->belongsTo(RecurringInvoice::class);
     }
 
+    /**
+     * Staff account that raised the document.
+     */
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'creator_id');
     }
 
     /**
-     * The original invoice this credit note reverses (null for normal invoices).
+     * The document this one reverses, null on anything but a credit note.
      */
     public function relatedInvoice(): BelongsTo
     {
@@ -155,7 +262,7 @@ class Invoice extends Model implements HasMedia
     }
 
     /**
-     * Credit notes that reverse this invoice.
+     * Reversals raised against this document.
      */
     public function creditNotes(): HasMany
     {
@@ -163,228 +270,334 @@ class Invoice extends Model implements HasMedia
             ->where('type', self::TYPE_CREDIT_NOTE);
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Accessors
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Whether this document reverses another one.
+     */
     public function isCreditNote(): bool
     {
         return $this->type === self::TYPE_CREDIT_NOTE;
     }
 
+    /**
+     * Shareable link to the rendered PDF. Possession of the hash is the only
+     * credential the link needs.
+     */
     public function getInvoicePdfUrlAttribute()
     {
         return url('/invoices/pdf/'.$this->unique_hash);
     }
 
+    /**
+     * Whether the optional payments module is installed and switched on.
+     */
     public function getPaymentModuleEnabledAttribute()
     {
-        if (Module::has('Payments')) {
-            return Module::isEnabled('Payments');
-        }
-
-        return false;
+        return Module::has('Payments') ? Module::isEnabled('Payments') : false;
     }
 
+    /**
+     * Whether the document may still be altered.
+     *
+     * A credited invoice is immutable: its line item ids anchor the lines of
+     * every credit note that reverses it. Past that, the company's
+     * retrospective-edits setting decides, tightening in three steps from
+     * "sent and part paid" through "part paid" to "paid".
+     */
     public function getAllowEditAttribute()
     {
-        // A credited invoice is immutable: its line item ids anchor the lines of
-        // every credit note that reverses it.
-        $hasCreditNotes = $this->relationLoaded('creditNotes')
-            ? $this->creditNotes->isNotEmpty()
-            : $this->creditNotes()->exists();
-
-        if ($hasCreditNotes) {
+        if ($this->hasCreditNotes()) {
             return false;
         }
 
-        $retrospective_edit = CompanySetting::getSetting('retrospective_edits', $this->company_id);
+        $mode = CompanySetting::getSetting('retrospective_edits', $this->company_id);
 
-        $allowed = true;
+        $collected = $this->paid_status === self::STATUS_PARTIALLY_PAID
+            || $this->paid_status === self::STATUS_PAID;
 
-        $status = [
+        $undelivered = [
             self::STATUS_DRAFT,
             self::STATUS_SENT,
             self::STATUS_VIEWED,
             self::STATUS_COMPLETED,
         ];
 
-        if ($retrospective_edit == 'disable_on_invoice_sent' && (in_array($this->status, $status)) && ($this->paid_status === Invoice::STATUS_PARTIALLY_PAID || $this->paid_status === Invoice::STATUS_PAID)) {
-            $allowed = false;
-        } elseif ($retrospective_edit == 'disable_on_invoice_partial_paid' && ($this->paid_status === Invoice::STATUS_PARTIALLY_PAID || $this->paid_status === Invoice::STATUS_PAID)) {
-            $allowed = false;
-        } elseif ($retrospective_edit == 'disable_on_invoice_paid' && $this->paid_status === Invoice::STATUS_PAID) {
-            $allowed = false;
+        if ($mode == 'disable_on_invoice_sent') {
+            return ! (in_array($this->status, $undelivered) && $collected);
         }
 
-        return $allowed;
+        if ($mode == 'disable_on_invoice_partial_paid') {
+            return ! $collected;
+        }
+
+        if ($mode == 'disable_on_invoice_paid') {
+            return $this->paid_status !== self::STATUS_PAID;
+        }
+
+        return true;
     }
 
+    /**
+     * The delivery status to fall back on when a document stops being complete:
+     * as far along as it had already travelled, and no further.
+     */
     public function getPreviousStatus(): string
     {
         if ($this->viewed) {
             return self::STATUS_VIEWED;
-        } elseif ($this->sent) {
-            return self::STATUS_SENT;
-        } else {
-            return self::STATUS_DRAFT;
         }
+
+        if ($this->sent) {
+            return self::STATUS_SENT;
+        }
+
+        return self::STATUS_DRAFT;
     }
 
+    /**
+     * The note field with its placeholders resolved and its markup sanitised.
+     *
+     * @param  mixed  $value
+     */
     public function getFormattedNotesAttribute($value)
     {
         return $this->getNotes();
     }
 
+    /**
+     * Creation timestamp in the company's configured date format.
+     *
+     * @param  mixed  $value
+     */
     public function getFormattedCreatedAtAttribute($value)
     {
-        $dateFormat = CompanySetting::getSetting('carbon_date_format', $this->company_id);
-
-        return Carbon::parse($this->created_at)->format($dateFormat);
+        return Carbon::parse($this->created_at)->format($this->documentDateFormat());
     }
 
+    /**
+     * Payment deadline in the company's configured date format, written in the
+     * language the application is running in.
+     *
+     * @param  mixed  $value
+     */
     public function getFormattedDueDateAttribute($value)
     {
-        $dateFormat = CompanySetting::getSetting('carbon_date_format', $this->company_id);
-
-        return Carbon::parse($this->due_date)->translatedFormat($dateFormat);
+        return Carbon::parse($this->due_date)->translatedFormat($this->documentDateFormat());
     }
 
+    /**
+     * Outstanding balance rendered for print, in the document's currency, or
+     * in the company's for a document that never got one.
+     *
+     * @param  mixed  $value
+     */
     public function getFormattedDueAmountAttribute($value)
     {
-        $currency = $this->currency;
-
-        if (! $currency) {
-            $currency = Currency::findOrFail(CompanySetting::getSetting('currency', $this->company_id));
-        }
+        $currency = $this->currency ?: Currency::findOrFail(
+            CompanySetting::getSetting('currency', $this->company_id)
+        );
 
         return format_money_pdf($this->due_amount, $currency);
     }
 
+    /**
+     * Issue date in the company's configured date format, written in the
+     * language the application is running in and carrying the time of day when
+     * the company asked for invoices to be timestamped.
+     *
+     * @param  mixed  $value
+     */
     public function getFormattedInvoiceDateAttribute($value)
     {
-        $dateFormat = CompanySetting::getSetting('carbon_date_format', $this->company_id);
-        $timeFormat = CompanySetting::getSetting('carbon_time_format', $this->company_id);
-        $invoiceTimeEnabled = CompanySetting::getSetting('invoice_use_time', $this->company_id);
+        $format = $this->documentDateFormat();
 
-        if ($invoiceTimeEnabled === 'YES') {
-            $dateFormat .= ' '.$timeFormat;
+        if (CompanySetting::getSetting('invoice_use_time', $this->company_id) === 'YES') {
+            $format .= ' '.CompanySetting::getSetting('carbon_time_format', $this->company_id);
         }
 
-        return Carbon::parse($this->invoice_date)->translatedFormat($dateFormat);
+        return Carbon::parse($this->invoice_date)->translatedFormat($format);
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Query scopes
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Narrow to one delivery status.
+     */
     public function scopeWhereStatus($query, $status)
     {
-        return $query->where('invoices.status', $status);
+        return $query->where($this->qualifyColumn('status'), $status);
     }
 
+    /**
+     * Narrow to one collection status.
+     */
     public function scopeWherePaidStatus($query, $status)
     {
-        return $query->where('invoices.paid_status', $status);
+        return $query->where($this->qualifyColumn('paid_status'), $status);
     }
 
+    /**
+     * Narrow to documents with money still outstanding.
+     *
+     * The status argument is accepted for call-site symmetry with the other
+     * status scopes and is deliberately unused: "due" is a fixed pair of
+     * collection statuses, not a value to match.
+     */
     public function scopeWhereDueStatus($query, $status)
     {
-        return $query->whereIn('invoices.paid_status', [
+        return $query->whereIn($this->qualifyColumn('paid_status'), [
             self::STATUS_UNPAID,
             self::STATUS_PARTIALLY_PAID,
         ]);
     }
 
+    /**
+     * Partial match on the document number.
+     */
     public function scopeWhereInvoiceNumber($query, $invoiceNumber)
     {
-        return $query->where('invoices.invoice_number', 'LIKE', '%'.$invoiceNumber.'%');
+        return $query->where($this->qualifyColumn('invoice_number'), 'LIKE', '%'.$invoiceNumber.'%');
     }
 
+    /**
+     * Restrict to documents issued inside the inclusive range.
+     */
     public function scopeInvoicesBetween($query, $start, $end)
     {
-        return $query->whereBetween(
-            'invoices.invoice_date',
-            [$start->format('Y-m-d'), $end->format('Y-m-d')]
-        );
+        return $query->whereBetween($this->qualifyColumn('invoice_date'), [
+            $start->format('Y-m-d'),
+            $end->format('Y-m-d'),
+        ]);
     }
 
+    /**
+     * Keep only documents whose contact matches every whitespace-separated
+     * term, a term counting as matched when it turns up in the display name,
+     * the contact person or the company name.
+     */
     public function scopeWhereSearch($query, $search)
     {
-        foreach (explode(' ', $search) as $term) {
-            $query->whereHas('customer', function ($query) use ($term) {
-                $query->where('name', 'LIKE', '%'.$term.'%')
-                    ->orWhere('contact_name', 'LIKE', '%'.$term.'%')
-                    ->orWhere('company_name', 'LIKE', '%'.$term.'%');
+        $terms = explode(' ', $search);
+
+        foreach ($terms as $term) {
+            $query->whereHas('customer', function ($contact) use ($term) {
+                $needle = '%'.$term.'%';
+
+                $contact->where('name', 'LIKE', $needle)
+                    ->orWhere('contact_name', 'LIKE', $needle)
+                    ->orWhere('company_name', 'LIKE', $needle);
             });
         }
     }
 
+    /**
+     * Sort by a caller-supplied column, sanitised before it reaches SQL.
+     */
     public function scopeWhereOrder($query, $orderByField, $orderBy)
     {
         SafeOrderBy::apply($query, $orderByField, $orderBy);
     }
 
+    /**
+     * Run every listed filter that carries a value.
+     *
+     * Falsy entries are dropped up front, so a filter sent as an empty string,
+     * a zero or a null is the same as one that was never sent at all. Order is
+     * load-bearing: the clauses land in the query in the order written here,
+     * and the document-id filter contributes an OR, which makes everything
+     * queued before it part of that alternative.
+     */
     public function scopeApplyFilters($query, array $filters)
     {
-        $filters = collect($filters)->filter()->all();
+        $filters = array_filter($filters);
 
-        return $query->when($filters['search'] ?? null, function ($query, $search) {
-            $query->whereSearch($search);
-        })->when($filters['status'] ?? null, function ($query, $status) {
-            match ($status) {
-                self::STATUS_UNPAID, self::STATUS_PARTIALLY_PAID, self::STATUS_PAID => $query->wherePaidStatus($status),
-                'DUE' => $query->whereDueStatus($status),
-                default => $query->whereStatus($status),
-            };
-        })->when($filters['paid_status'] ?? null, function ($query, $paidStatus) {
-            $query->wherePaidStatus($paidStatus);
-        })->when($filters['invoice_id'] ?? null, function ($query, $invoiceId) {
-            $query->whereInvoice($invoiceId);
-        })->when($filters['invoice_number'] ?? null, function ($query, $invoiceNumber) {
-            $query->whereInvoiceNumber($invoiceNumber);
-        })->when(($filters['from_date'] ?? null) && ($filters['to_date'] ?? null), function ($query) use ($filters) {
-            $start = Carbon::parse($filters['from_date']);
-            $end = Carbon::parse($filters['to_date']);
-            $query->invoicesBetween($start, $end);
-        })->when($filters['customer_id'] ?? null, function ($query, $customerId) {
-            $query->where('customer_id', $customerId);
-        })->when($filters['orderByField'] ?? null, function ($query, $orderByField) use ($filters) {
-            $orderBy = $filters['orderBy'] ?? 'desc';
+        $clauses = [
+            'search' => fn ($value) => $query->whereSearch($value),
+            'status' => fn ($value) => match ($value) {
+                self::STATUS_UNPAID, self::STATUS_PARTIALLY_PAID, self::STATUS_PAID => $query->wherePaidStatus($value),
+                'DUE' => $query->whereDueStatus($value),
+                default => $query->whereStatus($value),
+            },
+            'paid_status' => fn ($value) => $query->wherePaidStatus($value),
+            'invoice_id' => fn ($value) => $query->whereInvoice($value),
+            'invoice_number' => fn ($value) => $query->whereInvoiceNumber($value),
+        ];
 
-            SafeOrderBy::apply($query, $orderByField, $orderBy);
-        }, function ($query) {
-            $query->orderBy('sequence_number', 'desc');
-        });
+        foreach ($clauses as $filter => $clause) {
+            $value = $filters[$filter] ?? null;
+
+            if ($value) {
+                $clause($value);
+            }
+        }
+
+        $from = $filters['from_date'] ?? null;
+        $to = $filters['to_date'] ?? null;
+
+        if ($from && $to) {
+            $query->invoicesBetween(Carbon::parse($from), Carbon::parse($to));
+        }
+
+        $contact = $filters['customer_id'] ?? null;
+
+        if ($contact) {
+            $query->where('customer_id', $contact);
+        }
+
+        $sortField = $filters['orderByField'] ?? null;
+
+        if (! $sortField) {
+            return $query->orderBy('sequence_number', 'desc');
+        }
+
+        return SafeOrderBy::apply($query, $sortField, $filters['orderBy'] ?? 'desc');
     }
 
+    /**
+     * Widen a listing to also take in one specific document.
+     */
     public function scopeWhereInvoice($query, $invoice_id)
     {
         $query->orWhere('id', $invoice_id);
     }
 
-    public function getEstimateTemplateName(): string
-    {
-        $templateName = Str::replace('invoice', 'estimate', $this->template_name);
-
-        // Empty image format: only the names are wanted here, and the default
-        // builds a base64 preview for every template to answer that.
-        $names = array_column(PdfTemplateUtils::getFormattedTemplates('estimate', ''), 'name');
-
-        if (! in_array($templateName, $names)) {
-            $templateName = 'estimate1';
-        }
-
-        return $templateName;
-    }
-
+    /**
+     * Narrow to the company the current request is acting on.
+     */
     public function scopeWhereCompany($query)
     {
-        $query->where('invoices.company_id', request()->header('company'));
+        $query->where($this->qualifyColumn('company_id'), request()->header('company'));
     }
 
+    /**
+     * Narrow to one company.
+     */
     public function scopeWhereCompanyId($query, $company)
     {
-        $query->where('invoices.company_id', $company);
+        $query->where($this->qualifyColumn('company_id'), $company);
     }
 
+    /**
+     * Narrow to one contact.
+     */
     public function scopeWhereCustomer($query, $customer_id)
     {
-        $query->where('invoices.customer_id', $customer_id);
+        $query->where($this->qualifyColumn('customer_id'), $customer_id);
     }
 
+    /**
+     * Return the whole result set for the sentinel limit "all", otherwise a
+     * page of the requested size.
+     */
     public function scopePaginateData($query, $limit)
     {
         if ($limit == 'all') {
@@ -394,69 +607,104 @@ class Invoice extends Model implements HasMedia
         return $query->paginate($limit);
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Rendering and correspondence
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * The estimate template matching this document's invoice template, falling
+     * back to the first estimate template when there is no counterpart.
+     */
+    public function getEstimateTemplateName(): string
+    {
+        $counterpart = Str::replace('invoice', 'estimate', $this->template_name);
+
+        // The blank image format is what keeps this cheap: asked for the
+        // default one, the lister renders a base64 thumbnail of every single
+        // template just to hand back a list of names.
+        $available = array_column(PdfTemplateUtils::getFormattedTemplates('estimate', ''), 'name');
+
+        return in_array($counterpart, $available) ? $counterpart : 'estimate1';
+    }
+
+    /**
+     * View data for the PDF renderer.
+     */
     public function getPDFData(): mixed
     {
         return app(InvoicePdfDataProvider::class)->getPdfData($this);
     }
 
+    /**
+     * Whether outgoing mail should carry the PDF. Anything other than an
+     * explicit refusal counts as consent.
+     */
     public function getEmailAttachmentSetting(): bool
     {
-        $invoiceAsAttachment = CompanySetting::getSetting('invoice_email_attachment', $this->company_id);
-
-        if ($invoiceAsAttachment == 'NO') {
-            return false;
-        }
-
-        return true;
+        return CompanySetting::getSetting('invoice_email_attachment', $this->company_id) != 'NO';
     }
 
+    /**
+     * The company's address block for print, or false when the company has no
+     * address on file.
+     */
     public function getCompanyAddress(): string|false
     {
-        if ($this->company && (! $this->company->address()->exists())) {
-            return false;
-        }
-
-        $format = CompanySetting::getSetting('invoice_company_address_format', $this->company_id);
-
-        return $this->getFormattedString($format);
+        return $this->addressBlock(
+            $this->company && (! $this->company->address()->exists()),
+            'invoice_company_address_format'
+        );
     }
 
+    /**
+     * The contact's delivery address block for print, or false when the
+     * contact has no shipping address on file.
+     */
     public function getCustomerShippingAddress(): string|false
     {
-        if ($this->customer && (! $this->customer->shippingAddress()->exists())) {
-            return false;
-        }
-
-        $format = CompanySetting::getSetting('invoice_shipping_address_format', $this->company_id);
-
-        return $this->getFormattedString($format);
+        return $this->addressBlock(
+            $this->customer && (! $this->customer->shippingAddress()->exists()),
+            'invoice_shipping_address_format'
+        );
     }
 
+    /**
+     * The contact's billing address block for print, or false when the contact
+     * has no billing address on file.
+     */
     public function getCustomerBillingAddress(): string|false
     {
-        if ($this->customer && (! $this->customer->billingAddress()->exists())) {
-            return false;
-        }
-
-        $format = CompanySetting::getSetting('invoice_billing_address_format', $this->company_id);
-
-        return $this->getFormattedString($format);
+        return $this->addressBlock(
+            $this->customer && (! $this->customer->billingAddress()->exists()),
+            'invoice_billing_address_format'
+        );
     }
 
+    /**
+     * The note field with its placeholders resolved and its markup sanitised.
+     */
     public function getNotes(): string
     {
         return PdfHtmlSanitizer::sanitize($this->getFormattedString($this->notes));
     }
 
+    /**
+     * Resolve the placeholders in a mail body, dropping any that named
+     * something this document cannot supply.
+     */
     public function getEmailString(string $body): string
     {
-        $values = array_merge($this->getFieldsArray(), $this->getExtraFields());
+        $placeholders = array_merge($this->getFieldsArray(), $this->getExtraFields());
 
-        $body = strtr($body, $values);
-
-        return preg_replace('/{(.*?)}/', '', $body);
+        return preg_replace('/{(.*?)}/', '', strtr($body, $placeholders));
     }
 
+    /**
+     * The placeholders this document contributes on top of the shared contact
+     * and company set.
+     */
     public function getExtraFields(): array
     {
         return [
@@ -467,33 +715,40 @@ class Invoice extends Model implements HasMedia
         ];
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Balance and status
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Add an amount to the invoice's due balance and recalculate the paid status.
+     * Grow the outstanding balance, restate it in the company's currency and
+     * re-derive both statuses from where it lands.
+     *
+     * Growing the balance is what unwinding a collection looks like from the
+     * document's side, which is why the amount is added rather than taken off.
      */
     public function addInvoicePayment(int $amount): void
     {
-        $this->due_amount += $amount;
-        $this->base_due_amount = $this->due_amount * $this->exchange_rate;
-
-        $this->changeInvoiceStatus($this->due_amount);
+        $this->restateBalance($this->due_amount + $amount);
     }
 
     /**
-     * Subtract an amount from the invoice's due balance and recalculate the paid status.
+     * Shrink the outstanding balance by a collected amount, restating it and
+     * re-deriving both statuses the same way.
      */
     public function subtractInvoicePayment(int $amount): void
     {
-        $this->due_amount -= $amount;
-        $this->base_due_amount = $this->due_amount * $this->exchange_rate;
-
-        $this->changeInvoiceStatus($this->due_amount);
+        $this->restateBalance($this->due_amount - $amount);
     }
 
     /**
-     * Determine the invoice status and paid_status based on the remaining due amount.
+     * Work out the pair of statuses that describes a given outstanding balance.
      *
-     * Returns an empty array for negative amounts, marks as paid when zero,
-     * unpaid when equal to total, or partially paid otherwise.
+     * Nothing outstanding closes the document and clears the overdue flag; a
+     * balance still standing at the full document total means not a penny has
+     * arrived; anything in between is a part payment. A negative balance is
+     * refused outright, and the empty array says so.
      */
     public function getInvoiceStatusByAmount(int $amount): array
     {
@@ -502,37 +757,91 @@ class Invoice extends Model implements HasMedia
         }
 
         if ($amount == 0) {
-            $data = [
-                'status' => Invoice::STATUS_COMPLETED,
-                'paid_status' => Invoice::STATUS_PAID,
+            return [
+                'status' => self::STATUS_COMPLETED,
+                'paid_status' => self::STATUS_PAID,
                 'overdue' => false,
-            ];
-        } elseif ($amount == $this->total) {
-            $data = [
-                'status' => $this->getPreviousStatus(),
-                'paid_status' => Invoice::STATUS_UNPAID,
-            ];
-        } else {
-            $data = [
-                'status' => $this->getPreviousStatus(),
-                'paid_status' => Invoice::STATUS_PARTIALLY_PAID,
             ];
         }
 
-        return $data;
+        return [
+            'status' => $this->getPreviousStatus(),
+            'paid_status' => $amount == $this->total
+                ? self::STATUS_UNPAID
+                : self::STATUS_PARTIALLY_PAID,
+        ];
     }
 
     /**
-     * Persist the invoice status change immediately based on the given due amount.
+     * Apply the statuses a given outstanding balance implies and write the row
+     * back straight away. A balance the derivation refuses leaves the document
+     * untouched.
      */
     public function changeInvoiceStatus(int $amount): void
     {
-        $status = $this->getInvoiceStatusByAmount($amount);
-        if (! empty($status)) {
-            foreach ($status as $key => $value) {
-                $this->setAttribute($key, $value);
-            }
-            $this->save();
+        $changes = $this->getInvoiceStatusByAmount($amount);
+
+        if (empty($changes)) {
+            return;
         }
+
+        foreach ($changes as $attribute => $value) {
+            $this->setAttribute($attribute, $value);
+        }
+
+        $this->save();
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Internals
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Whether any credit note reverses this invoice, answered from the loaded
+     * relation when there is one so that an eager-loaded listing does not fire
+     * a query per row.
+     */
+    private function hasCreditNotes(): bool
+    {
+        if ($this->relationLoaded('creditNotes')) {
+            return $this->creditNotes->isNotEmpty();
+        }
+
+        return $this->creditNotes()->exists();
+    }
+
+    /**
+     * Render one of the company's stored address formats, or hand back false
+     * when the party it describes is present but has no address on file.
+     */
+    private function addressBlock(bool $missing, string $setting): string|false
+    {
+        if ($missing) {
+            return false;
+        }
+
+        return $this->getFormattedString(CompanySetting::getSetting($setting, $this->company_id));
+    }
+
+    /**
+     * Move the outstanding balance to a new figure, carry the company-currency
+     * copy along with it, and let the statuses follow.
+     */
+    private function restateBalance(int|float $outstanding): void
+    {
+        $this->due_amount = $outstanding;
+        $this->base_due_amount = $outstanding * $this->exchange_rate;
+
+        $this->changeInvoiceStatus($outstanding);
+    }
+
+    /**
+     * The date format configured by the company that owns this document.
+     */
+    private function documentDateFormat(): mixed
+    {
+        return CompanySetting::getSetting('carbon_date_format', $this->company_id);
     }
 }

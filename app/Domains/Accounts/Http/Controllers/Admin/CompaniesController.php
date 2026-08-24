@@ -68,8 +68,7 @@ class CompaniesController extends Controller
         $this->authorize('create company');
 
         $user = $request->user();
-
-        $company = Company::create($request->getCompanyPayload());
+        $company = Company::query()->create($request->getCompanyPayload());
         $company->unique_hash = Hashids::connection(HashidConnection::Company->value)->encode($company->id);
         $company->save();
         $this->companyService->setupDefaults($company, (int) $request->validated('currency'));
@@ -87,12 +86,15 @@ class CompaniesController extends Controller
 
     public function destroy(Request $request)
     {
-        $company = Company::find($request->header('company'));
+        $company = Company::query()->find($request->header('company'));
 
         $this->authorize('delete company', $company);
 
-        if ($request->name !== $company->name) {
-            return respondJson('company_name_must_match_with_given_name', 'Company name must match with given name');
+        if ($company->name !== $request->input('name')) {
+            return respondJson(
+                'company_name_must_match_with_given_name',
+                'Company name must match with given name'
+            );
         }
 
         $this->companyService->delete($company);
@@ -104,8 +106,6 @@ class CompaniesController extends Controller
 
     public function userCompanies(Request $request)
     {
-        $companies = $request->user()->companies;
-
-        return CompanyResource::collection($companies);
+        return CompanyResource::collection($request->user()->companies);
     }
 }

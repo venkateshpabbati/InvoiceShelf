@@ -9,66 +9,56 @@ use App\Domains\Catalog\Http\Resources\ItemResource;
 use App\Domains\Catalog\Models\Item;
 use App\Domains\Taxation\Models\TaxType;
 use App\Platform\Http\Controller;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
+/**
+ * Endpoints for the catalog of sellable items owned by the active company.
+ *
+ * Removal happens in batches through delete(). The resource routes advertise a
+ * per-item delete as well, but nothing here answers it -- kept as is, since
+ * the working path has always been the batch one.
+ */
 class ItemsController extends Controller
 {
+    /**
+     * Rows per page when the caller does not ask for a size of its own.
+     */
+    private const DEFAULT_LIMIT = 10;
+
     public function __construct(
         private readonly ItemService $itemService,
     ) {}
 
     /**
-     * Retrieve a list of existing Items.
+     * One page of the company's catalog.
      *
-     * @return JsonResponse
+     * The unit table is joined in so a row can carry the name of its unit
+     * alongside the item's own columns. Clause order is deliberate: the
+     * company narrowing goes on first, the query-string filters after it, and
+     * `latest()` trails whatever explicit ordering those filters asked for. A
+     * `limit` of "all" makes the paginate scope hand back the whole set.
      */
     public function index(Request $request)
     {
         $this->authorize('viewAny', Item::class);
 
-        $limit = $request->has('limit') ? $request->limit : 10;
+        $filters = $request->all();
 
-        $items = Item::whereCompany()
-            ->leftJoin('units', 'units.id', '=', 'items.unit_id')
-            ->applyFilters($request->all())
-            ->select('items.*', 'units.name as unit_name')
+        $items = Item::query()
+            ->whereCompany()
+            ->leftJoin('units', 'items.unit_id', '=', 'units.id')
+            ->applyFilters($filters)
+            ->select(['items.*', 'units.name as unit_name'])
             ->latest()
-            ->paginateData($limit);
+            ->paginateData($request->input('limit', self::DEFAULT_LIMIT));
 
-        return ItemResource::collection($items)
-            ->additional(['meta' => [
-                'tax_types' => TaxType::whereCompany()
-                    ->whereTransactionType(TaxType::TRANSACTION_TYPE_SALES)
-                    ->latest()
-                    ->get(),
-                'item_total_count' => Item::whereCompany()->count(),
-            ]]);
+        return ItemResource::collection($items)->additional([
+            'meta' => $this->listingMeta(),
+        ]);
     }
 
     /**
-     * Create Item.
-     *
-     * @return JsonResponse
-     */
-    public function store(ItemsRequest $request)
-    {
-        $this->authorize('create', Item::class);
-
-        $item = $this->itemService->create(
-            $request->validated(),
-            $request->input('taxes', []),
-            (int) $request->header('company'),
-            (int) $request->user()->getAuthIdentifier(),
-        );
-
-        return new ItemResource($item);
-    }
-
-    /**
-     * get an existing Item.
-     *
-     * @return JsonResponse
+     * A single catalog entry.
      */
     public function show(Item $item)
     {
@@ -78,42 +68,89 @@ class ItemsController extends Controller
     }
 
     /**
-     * Update an existing Item.
+     * Put a new entry in the catalog, optionally with default taxes of its own.
      *
-     * @return JsonResponse
+     * Company, creator and currency are decided from the request context, not
+     * from the payload. The answer is 200 rather than 201: the service hands
+     * back a freshly read row, so the resource does not see a just-created
+     * model. Kept as is.
+     */
+    public function store(ItemsRequest $request)
+    {
+        $this->authorize('create', Item::class);
+
+        $companyId = (int) $request->header('company');
+        $creatorId = (int) $request->user()->getAuthIdentifier();
+
+        $created = $this->itemService->create(
+            $request->validated(),
+            $request->input('taxes', []),
+            $companyId,
+            $creatorId,
+        );
+
+        return new ItemResource($created);
+    }
+
+    /**
+     * Amend an existing entry.
+     *
+     * The submitted tax list replaces the stored one wholesale; sending an
+     * empty list clears the taxes.
      */
     public function update(ItemsRequest $request, Item $item)
     {
         $this->authorize('update', $item);
 
-        $item = $this->itemService->update(
+        $companyId = (int) $request->header('company');
+
+        $updated = $this->itemService->update(
             $item,
             $request->validated(),
             $request->input('taxes', []),
-            (int) $request->header('company'),
+            $companyId,
         );
 
-        return new ItemResource($item);
+        return new ItemResource($updated);
     }
 
     /**
-     * Delete a list of existing Items.
+     * Drop a batch of entries at once.
      *
-     * @param  Request  $request
-     * @return JsonResponse
+     * What may be removed at all is settled by the request object. The ids it
+     * cleared are then narrowed to the active company, so an id belonging
+     * elsewhere is quietly skipped rather than refused.
      */
     public function delete(DeleteItemsRequest $request)
     {
         $this->authorize('delete multiple items');
 
-        $ids = Item::whereCompany()
-            ->whereIn('id', $request->ids)
+        $ownIds = Item::query()
+            ->whereCompany()
+            ->whereIn('id', $request->input('ids'))
             ->pluck('id');
 
-        Item::destroy($ids);
+        Item::destroy($ownIds);
 
-        return response()->json([
-            'success' => true,
-        ]);
+        return response()->json(['success' => true]);
+    }
+
+    /**
+     * Extras shipped beside the listing rows: the tax types that may be
+     * charged on a sale, newest first, and the size of the catalog. The count
+     * covers the whole company and ignores the filters just applied.
+     *
+     * @return array<string, mixed>
+     */
+    private function listingMeta(): array
+    {
+        return [
+            'tax_types' => TaxType::query()
+                ->whereCompany()
+                ->where('transaction_type', TaxType::TRANSACTION_TYPE_SALES)
+                ->latest()
+                ->get(),
+            'item_total_count' => Item::query()->whereCompany()->count(),
+        ];
     }
 }

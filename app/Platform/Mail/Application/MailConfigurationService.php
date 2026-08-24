@@ -154,15 +154,8 @@ class MailConfigurationService implements MailConfigurator
                 'string',
                 Rule::in($availableDrivers),
             ],
-            'from_name' => [
-                'required',
-                'string',
-            ],
-            'from_mail' => [
-                'required',
-                'string',
-                'email',
-            ],
+            'from_name' => ['required', 'string'],
+            'from_mail' => ['required', 'string', 'email'],
         ];
 
         if ($allowDisabledCustomConfig) {

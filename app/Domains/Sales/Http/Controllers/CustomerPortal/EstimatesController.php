@@ -13,56 +13,66 @@ use Illuminate\Support\Facades\Auth;
 class EstimatesController extends Controller
 {
     /**
-     * Display a listing of the resource.
+     * Page through the offers addressed to the signed-in contact.
+     *
+     * Unsent work stays private to the issuer, so drafts reach neither the
+     * page itself nor the counter beside it.
      *
      * @return Response
      */
     public function index(Request $request)
     {
-        $limit = $request->has('limit') ? $request->limit : 10;
+        $perPage = 10;
 
-        $estimates = Estimate::with([
-            'items',
-            'customer',
-            'taxes',
-            'creator',
-        ])
-            ->where('status', '<>', 'DRAFT')
-            ->whereCustomer(Auth::guard('customer')->id())
-            ->applyFilters($request->only([
-                'status',
-                'estimate_number',
-                'from_date',
-                'to_date',
-                'orderByField',
-                'orderBy',
-            ]))
-            ->latest()
-            ->paginateData($limit);
+        if ($request->has('limit')) {
+            $perPage = $request->limit;
+        }
 
-        return EstimateResource::collection($estimates)
+        $contact = Auth::guard('customer')->id();
+
+        $query = Estimate::with(['items', 'customer', 'taxes', 'creator'])
+            ->where('status', '<>', Estimate::STATUS_DRAFT)
+            ->whereCustomer($contact);
+
+        $query->applyFilters($request->only([
+            'status',
+            'estimate_number',
+            'from_date',
+            'to_date',
+            'orderByField',
+            'orderBy',
+        ]));
+
+        $page = $query->latest()->paginateData($perPage);
+
+        $visible = Estimate::query()
+            ->where('status', '<>', Estimate::STATUS_DRAFT)
+            ->whereCustomer($contact)
+            ->count();
+
+        return EstimateResource::collection($page)
             ->additional(['meta' => [
-                'estimateTotalCount' => Estimate::where('status', '<>', 'DRAFT')->whereCustomer(Auth::guard('customer')->id())->count(),
+                'estimateTotalCount' => $visible,
             ]]);
     }
 
     /**
-     * Display the specified resource.
+     * Hand back a single offer, looked up inside the portal's company and
+     * narrowed to the signed-in contact so ids cannot be probed.
      *
-     * @param  Estimate  $estimate
+     * @param  string  $id
      * @return Response
      */
     public function show(Company $company, $id)
     {
-        $estimate = $company->estimates()
-            ->whereCustomer(Auth::guard('customer')->id())
-            ->where('id', $id)
-            ->first();
+        $contact = Auth::guard('customer')->id();
 
-        if (! $estimate) {
-            return response()->json(['error' => 'estimate_not_found'], 404);
+        $estimate = $company->estimates()->whereCustomer($contact)->where('id', $id)->first();
+
+        if ($estimate === null) {
+            return response()->json(['error' => 'estimate_not_found'], Response::HTTP_NOT_FOUND);
         }
 
-        return new EstimateResource($estimate);
+        return EstimateResource::make($estimate);
     }
 }

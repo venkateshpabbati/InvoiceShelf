@@ -13,12 +13,13 @@ class EloquentCustomFieldValueWriter implements CustomFieldValueWriter
         foreach ($customFields as $field) {
             $field = $this->normalize($field);
             $customField = CustomField::find($field['id']);
+            $answerColumn = getCustomFieldValueKey($customField->type);
 
             $valuable->fields()->create([
-                'type' => $customField->type,
-                'custom_field_id' => $customField->id,
-                'company_id' => $customField->company_id,
-                getCustomFieldValueKey($customField->type) => $field['value'],
+                'type' => $customField['type'],
+                'custom_field_id' => $customField['id'],
+                'company_id' => $customField['company_id'],
+                $answerColumn => $field['value'],
             ]);
         }
     }
@@ -29,14 +30,13 @@ class EloquentCustomFieldValueWriter implements CustomFieldValueWriter
             $field = $this->normalize($field);
             $customField = CustomField::find($field['id']);
             $customFieldValue = $valuable->fields()->firstOrCreate([
-                'custom_field_id' => $customField->id,
-                'type' => $customField->type,
+                'custom_field_id' => $customField['id'],
+                'type' => $customField['type'],
                 'company_id' => $valuable->company_id,
             ]);
 
-            $type = getCustomFieldValueKey($customField->type);
-            $customFieldValue->$type = $field['value'];
-            $customFieldValue->save();
+            $answerColumn = getCustomFieldValueKey($customField->type);
+            $customFieldValue->forceFill([$answerColumn => $field['value']])->save();
         }
     }
 

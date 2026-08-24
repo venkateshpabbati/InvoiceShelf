@@ -10,6 +10,6 @@ class MoneyPaymentExchangeRateRecorder implements PaymentExchangeRateRecorder
 {
     public function record(Payment $payment): void
     {
-        ExchangeRateLog::addExchangeRateLog($payment);
+        ExchangeRateLog::addExchangeRateLog(model: $payment);
     }
 }

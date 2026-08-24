@@ -11,10 +11,17 @@ use App\Domains\Receivables\Http\Requests\SendPaymentRequest;
 use App\Domains\Receivables\Http\Resources\PaymentResource;
 use App\Domains\Receivables\Models\Payment;
 use App\Platform\Http\Controller;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Http\Response;
 use Illuminate\Mail\Markdown;
 
+/**
+ * Company-scoped payment endpoints: the listing, the write surface, the
+ * standalone allocation replace, bulk removal, and the receipt mailer.
+ *
+ * Money is handled by the service layer; the controller authorizes, hands the
+ * validated payload over, and renders the resource.
+ */
 class PaymentsController extends Controller
 {
     public function __construct(
@@ -23,16 +30,18 @@ class PaymentsController extends Controller
     ) {}
 
     /**
-     * Display a listing of the resource.
+     * Paginated payments of the active company, newest first.
      *
-     * @return Response
+     * @return JsonResponse
      */
     public function index(Request $request)
     {
         $this->authorize('viewAny', Payment::class);
 
-        $limit = $request->has('limit') ? $request->limit : 10;
-
+        // Customer and method are joined rather than eager loaded: rows are
+        // searched and ordered by the customer name, and each row carries the
+        // method label as payment_mode. The company scope has to precede the
+        // filters, because the payment_id filter widens the query with an OR.
         $payments = Payment::with(['allocations.invoice'])
             ->whereCompany()
             ->join('customers', 'customers.id', '=', 'payments.customer_id')
@@ -40,19 +49,21 @@ class PaymentsController extends Controller
             ->applyFilters($request->all())
             ->select('payments.*', 'customers.name', 'payment_methods.name as payment_mode')
             ->latest()
-            ->paginateData($limit);
+            ->paginateData($request->input('limit', 10));
 
         return PaymentResource::collection($payments)
-            ->additional(['meta' => [
-                'payment_total_count' => Payment::whereCompany()->count(),
-            ]]);
+            ->additional([
+                'meta' => [
+                    'payment_total_count' => Payment::whereCompany()->count(),
+                ],
+            ]);
     }
 
     /**
-     * Store a newly created resource in storage.
+     * Record a received amount, with the invoices it settles, if any.
      *
      * @param  Request  $request
-     * @return Response
+     * @return JsonResponse
      */
     public function store(PaymentRequest $request)
     {
@@ -67,6 +78,11 @@ class PaymentsController extends Controller
         return new PaymentResource($payment);
     }
 
+    /**
+     * One payment with the invoices its rows point at.
+     *
+     * @return JsonResponse
+     */
     public function show(Request $request, Payment $payment)
     {
         $this->authorize('view', $payment);
@@ -74,6 +90,13 @@ class PaymentsController extends Controller
         return new PaymentResource($payment->load(['allocations.invoice']));
     }
 
+    /**
+     * Overwrite a payment. Allocations are only re-cut when the payload carries
+     * an allocations key; leaving it out keeps the rows already on record.
+     *
+     * @param  Request  $request
+     * @return JsonResponse
+     */
     public function update(PaymentRequest $request, Payment $payment)
     {
         $this->authorize('update', $payment);
@@ -89,6 +112,12 @@ class PaymentsController extends Controller
         return new PaymentResource($payment);
     }
 
+    /**
+     * Re-cut the whole allocation set of one payment; an empty list releases
+     * every invoice it was covering.
+     *
+     * @return JsonResponse
+     */
     public function replaceAllocations(ReplacePaymentAllocationsRequest $request, Payment $payment)
     {
         $this->authorize('update', $payment);
@@ -100,6 +129,12 @@ class PaymentsController extends Controller
         return new PaymentResource($payment->load(['allocations.invoice']));
     }
 
+    /**
+     * Drop several payments at once. Ids outside the active company are quietly
+     * dropped from the set before the service deallocates and deletes them.
+     *
+     * @return JsonResponse
+     */
     public function delete(DeletePaymentsRequest $request)
     {
         $this->authorize('delete multiple payments');
@@ -115,6 +150,11 @@ class PaymentsController extends Controller
         ]);
     }
 
+    /**
+     * Mail the receipt, using the company's own mail configuration.
+     *
+     * @return JsonResponse
+     */
     public function send(SendPaymentRequest $request, Payment $payment)
     {
         $this->authorize('send payment', $payment);
@@ -124,6 +164,10 @@ class PaymentsController extends Controller
         return response()->json($response);
     }
 
+    /**
+     * Render the receipt mail body the composer is currently holding, so the
+     * SPA can show it before anything is sent.
+     */
     public function sendPreview(Request $request, Payment $payment)
     {
         $this->authorize('send payment', $payment);
@@ -136,6 +180,10 @@ class PaymentsController extends Controller
         return $markdown->render('emails.send.payment', ['data' => $data]);
     }
 
+    /**
+     * Custom field values are optional and arrive untyped, so anything that is
+     * not a list of rows is treated as "none supplied".
+     */
     private function customFields(PaymentRequest $request): ?iterable
     {
         $customFields = $request->input('customFields');

@@ -4,10 +4,18 @@ namespace App\Domains\Accounts\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
 
+/**
+ * The query behind reading preferences: a list of option names to look up.
+ *
+ * The list itself has to be there, and each entry has to be a non-empty
+ * string. Nothing checks that an option actually exists — unknown names are
+ * simply absent from the reply.
+ */
 class GetSettingsRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * Reading preferences is open to every member of the company, so nothing
+     * is refused here.
      */
     public function authorize(): bool
     {
@@ -15,7 +23,7 @@ class GetSettingsRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * @return array<string, array<int, string>>
      */
     public function rules(): array
     {

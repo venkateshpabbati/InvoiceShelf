@@ -3,146 +3,107 @@
 namespace App\Domains\Sales\Policies;
 
 use App\Domains\Accounts\Models\User;
-use App\Domains\Receivables\Models\Payment;
 use App\Domains\Sales\Models\Invoice;
 use Illuminate\Auth\Access\HandlesAuthorization;
 use Silber\Bouncer\BouncerFacade;
 
+/**
+ * Who may work with invoices — credit notes included, since those are invoice
+ * rows and ride on the same abilities.
+ *
+ * Every decision has two halves: the Bouncer ability, and — for anything
+ * aimed at an existing document — membership of the company that document
+ * belongs to, so an ability held in one company never reaches another
+ * company's data.
+ *
+ * Bouncer answers for the user it currently has scoped, not for the $user
+ * handed in; that argument only feeds the membership half.
+ */
 class InvoicePolicy
 {
     use HandlesAuthorization;
 
-    /**
-     * Determine whether the user can view any models.
-     *
-     * @return mixed
-     */
     public function viewAny(User $user): bool
     {
-        if (BouncerFacade::can('view-invoice', Invoice::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-invoice', Invoice::class);
     }
 
-    /**
-     * Determine whether the user can view the model.
-     *
-     * @return mixed
-     */
     public function view(User $user, Invoice $invoice): bool
     {
-        if (BouncerFacade::can('view-invoice', $invoice) && $user->hasCompany($invoice->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('view-invoice', $invoice) && $this->sameCompany($user, $invoice);
     }
 
-    /**
-     * Determine whether the user can create models.
-     *
-     * @return mixed
-     */
     public function create(User $user): bool
     {
-        if (BouncerFacade::can('create-invoice', Invoice::class)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('create-invoice', Invoice::class);
     }
 
     /**
-     * Determine whether the user can update the model.
+     * Editing answers to a third half on top of the usual two: the document
+     * has to still be open to it.
      *
-     * @return mixed
+     * A credit note never is. It is a reversal, immutable once minted, because
+     * saving it back through the invoice form would recompute its totals
+     * positive. For everything else the model's own accessor decides, which is
+     * where the company's retrospective-edits setting is read.
      */
     public function update(User $user, Invoice $invoice): bool
     {
-        // A credit note is a reversal document: it is immutable once minted,
-        // because saving it back through the invoice form would recompute its
-        // totals positive.
-        if ($invoice->isCreditNote()) {
-            return false;
-        }
-
-        if (BouncerFacade::can('edit-invoice', $invoice) && $user->hasCompany($invoice->company_id)) {
-            return $invoice->allow_edit;
-        }
-
-        return false;
+        return ! $invoice->isCreditNote()
+            && BouncerFacade::can('edit-invoice', $invoice)
+            && $this->sameCompany($user, $invoice)
+            && $invoice->allow_edit;
     }
 
-    /**
-     * Determine whether the user can delete the model.
-     *
-     * @return mixed
-     */
     public function delete(User $user, Invoice $invoice): bool
     {
-        if (BouncerFacade::can('delete-invoice', $invoice) && $user->hasCompany($invoice->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $invoice);
     }
 
     /**
-     * Determine whether the user can restore the model.
-     *
-     * @return mixed
+     * Restoring and erasing answer to the delete ability as well; invoices are
+     * not soft-deleted, so neither is reachable in practice.
      */
     public function restore(User $user, Invoice $invoice): bool
     {
-        if (BouncerFacade::can('delete-invoice', $invoice) && $user->hasCompany($invoice->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $invoice);
     }
 
-    /**
-     * Determine whether the user can permanently delete the model.
-     *
-     * @return mixed
-     */
     public function forceDelete(User $user, Invoice $invoice): bool
     {
-        if (BouncerFacade::can('delete-invoice', $invoice) && $user->hasCompany($invoice->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRemove($user, $invoice);
     }
 
     /**
-     * Determine whether the user can send email of the model.
+     * Mailing the document to its customer. Left without a return type, as it
+     * has always been.
      *
-     * @param  Payment  $payment
      * @return mixed
      */
     public function send(User $user, Invoice $invoice)
     {
-        if (BouncerFacade::can('send-invoice', $invoice) && $user->hasCompany($invoice->company_id)) {
-            return true;
-        }
-
-        return false;
+        return BouncerFacade::can('send-invoice', $invoice) && $this->sameCompany($user, $invoice);
     }
 
     /**
-     * Determine whether the user can delete models.
+     * The bulk-delete gate. It is handed no document, so only the ability half
+     * applies and nothing here confines it to one company — the endpoint does
+     * that itself when it resolves the ids.
      *
      * @return mixed
      */
     public function deleteMultiple(User $user)
     {
-        if (BouncerFacade::can('delete-invoice', Invoice::class)) {
-            return true;
-        }
+        return BouncerFacade::can('delete-invoice', Invoice::class);
+    }
 
-        return false;
+    private function mayRemove(User $user, Invoice $invoice): bool
+    {
+        return BouncerFacade::can('delete-invoice', $invoice) && $this->sameCompany($user, $invoice);
+    }
+
+    private function sameCompany(User $user, Invoice $invoice): bool
+    {
+        return $user->hasCompany($invoice->company_id);
     }
 }

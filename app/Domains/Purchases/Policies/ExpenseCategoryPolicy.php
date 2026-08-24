@@ -8,105 +8,72 @@ use App\Domains\Purchases\Models\ExpenseCategory;
 use Illuminate\Auth\Access\HandlesAuthorization;
 use Silber\Bouncer\BouncerFacade;
 
+/**
+ * Who may work with expense headings.
+ *
+ * Headings have no abilities of their own: every decision here asks for the
+ * *view* ability on expenses, so anyone who can read a company's expenses can
+ * also add, rename and remove its headings. Anything aimed at an existing
+ * heading additionally requires membership of the company that heading belongs
+ * to, so an ability held in one company never reaches another company's data.
+ *
+ * Bouncer answers for the user it currently has scoped, not for the $user
+ * handed in; that argument only feeds the membership half.
+ */
 class ExpenseCategoryPolicy
 {
     use HandlesAuthorization;
 
-    /**
-     * Determine whether the user can view any models.
-     *
-     * @return mixed
-     */
     public function viewAny(User $user): bool
     {
-        if (BouncerFacade::can('view-expense', Expense::class)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRead();
     }
 
-    /**
-     * Determine whether the user can view the model.
-     *
-     * @return mixed
-     */
     public function view(User $user, ExpenseCategory $expenseCategory): bool
     {
-        if (BouncerFacade::can('view-expense', Expense::class) && $user->hasCompany($expenseCategory->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayReach($user, $expenseCategory);
     }
 
-    /**
-     * Determine whether the user can create models.
-     *
-     * @return mixed
-     */
     public function create(User $user): bool
     {
-        if (BouncerFacade::can('view-expense', Expense::class)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayRead();
     }
 
-    /**
-     * Determine whether the user can update the model.
-     *
-     * @return mixed
-     */
     public function update(User $user, ExpenseCategory $expenseCategory): bool
     {
-        if (BouncerFacade::can('view-expense', Expense::class) && $user->hasCompany($expenseCategory->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayReach($user, $expenseCategory);
     }
 
-    /**
-     * Determine whether the user can delete the model.
-     *
-     * @return mixed
-     */
     public function delete(User $user, ExpenseCategory $expenseCategory): bool
     {
-        if (BouncerFacade::can('view-expense', Expense::class) && $user->hasCompany($expenseCategory->company_id)) {
-            return true;
-        }
-
-        return false;
+        return $this->mayReach($user, $expenseCategory);
     }
 
     /**
-     * Determine whether the user can restore the model.
-     *
-     * @return mixed
+     * Restoring and erasing sit on the same test as deleting; headings are not
+     * soft-deleted, so neither is reachable in practice.
      */
     public function restore(User $user, ExpenseCategory $expenseCategory): bool
     {
-        if (BouncerFacade::can('view-expense', Expense::class) && $user->hasCompany($expenseCategory->company_id)) {
-            return true;
-        }
+        return $this->mayReach($user, $expenseCategory);
+    }
 
-        return false;
+    public function forceDelete(User $user, ExpenseCategory $expenseCategory): bool
+    {
+        return $this->mayReach($user, $expenseCategory);
     }
 
     /**
-     * Determine whether the user can permanently delete the model.
-     *
-     * @return mixed
+     * The one ability every decision here rests on, asked of the expense class
+     * rather than of any heading.
      */
-    public function forceDelete(User $user, ExpenseCategory $expenseCategory): bool
+    private function mayRead(): bool
     {
-        if (BouncerFacade::can('view-expense', Expense::class) && $user->hasCompany($expenseCategory->company_id)) {
-            return true;
-        }
+        return BouncerFacade::can('view-expense', Expense::class);
+    }
 
-        return false;
+    private function mayReach(User $user, ExpenseCategory $expenseCategory): bool
+    {
+        return $this->mayRead() && $user->hasCompany($expenseCategory->company_id);
     }
 }

@@ -8,51 +8,71 @@ use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * A company as the admin API publishes it.
+ *
+ * Identity, branding and the public handle, plus the postal address when one is
+ * on file and the owning account when the caller has already loaded it. Two
+ * further fields describe authorization inside this company: the roles defined
+ * in its scope, and the title of the role the signed-in account holds there.
+ */
 class CompanyResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
-     *
      * @param  Request  $request
      */
     public function toArray($request): array
     {
+        $company = $this->resource;
+
         return [
-            'id' => $this->id,
-            'name' => $this->name,
-            'vat_id' => $this->vat_id,
-            'tax_id' => $this->tax_id,
-            'logo' => $this->logo,
-            'logo_path' => $this->logo_path,
-            'unique_hash' => $this->unique_hash,
-            'owner_id' => $this->owner_id,
-            'slug' => $this->slug,
-            'created_at' => $this->created_at,
-            'updated_at' => $this->updated_at,
-            'address' => $this->when($this->address()->exists(), function () {
-                return new AddressResource($this->address);
-            }),
-            'owner' => $this->when($this->relationLoaded('owner'), function () {
-                return new UserResource($this->owner);
-            }),
-            'roles' => RoleResource::collection($this->roles),
-            'user_role' => $this->getUserRoleTitle(),
+            'id' => $company->id,
+            'name' => $company->name,
+            'vat_id' => $company->vat_id,
+            'tax_id' => $company->tax_id,
+            'logo' => $company->logo,
+            'logo_path' => $company->logo_path,
+            'unique_hash' => $company->unique_hash,
+            'owner_id' => $company->owner_id,
+            'slug' => $company->slug,
+            'created_at' => $company->created_at,
+            'updated_at' => $company->updated_at,
+            'address' => $this->when(
+                $company->address()->exists(),
+                fn () => new AddressResource($company->address)
+            ),
+            'owner' => $this->when(
+                $company->relationLoaded('owner'),
+                fn () => new UserResource($company->owner)
+            ),
+            'roles' => RoleResource::collection($company->roles),
+            'user_role' => $this->assignedRoleTitle(),
         ];
     }
 
-    private function getUserRoleTitle(): ?string
+    /**
+     * Title of the role the signed-in account holds inside this company.
+     *
+     * Read off the assignment table by company id, so it stays right for a
+     * company other than the active one. Null when nobody is signed in, and
+     * null when the account has no assignment here.
+     */
+    private function assignedRoleTitle(): ?string
     {
-        $user = Auth::user();
+        $viewer = Auth::user();
 
-        if (! $user) {
+        if ($viewer === null) {
             return null;
         }
 
-        return DB::table('assigned_roles')
-            ->join('roles', 'roles.id', '=', 'assigned_roles.role_id')
-            ->where('assigned_roles.entity_id', $user->id)
-            ->where('assigned_roles.entity_type', $user->getMorphClass())
-            ->where('assigned_roles.scope', $this->id)
+        return DB::query()
+            ->from('assigned_roles')
+            ->join('roles', 'assigned_roles.role_id', '=', 'roles.id')
+            ->where([
+                ['assigned_roles.entity_type', '=', $viewer->getMorphClass()],
+                ['assigned_roles.entity_id', '=', $viewer->id],
+                ['assigned_roles.scope', '=', $this->id],
+            ])
             ->value('roles.title');
     }
 }

@@ -8,10 +8,15 @@ use App\Rules\RelationNotExist;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
+/**
+ * Payload of the bulk invoice removal endpoint: a list of ids, each of which
+ * has to name a real invoice that nothing is still hanging off. Company scoping
+ * is applied by the controller when it resolves the ids, not here.
+ */
 class DeleteInvoiceRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * The ability is checked in the controller.
      */
     public function authorize(): bool
     {
@@ -19,19 +24,22 @@ class DeleteInvoiceRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * An id survives validation when the invoice exists, carries no payment,
+     * and takes any credit note written against it along in the same batch.
+     *
+     * @return array<string, mixed>
      */
     public function rules(): array
     {
+        $batch = (array) $this->input('ids', []);
+
         return [
-            'ids' => [
-                'required',
-            ],
+            'ids' => 'required',
             'ids.*' => [
                 'required',
                 Rule::exists('invoices', 'id'),
                 new RelationNotExist(Invoice::class, 'payments'),
-                new CreditNoteDeletedTogether((array) $this->input('ids', [])),
+                new CreditNoteDeletedTogether($batch),
             ],
         ];
     }

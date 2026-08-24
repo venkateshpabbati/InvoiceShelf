@@ -7,6 +7,13 @@ use App\Domains\Receivables\Models\Payment;
 use App\Platform\Http\Controller;
 use Illuminate\Http\Request;
 
+/**
+ * Serves the receipt behind a payment's public hash.
+ *
+ * Asking for a preview short-circuits to the view data the template is
+ * rendered from, so the layout can be looked at without a PDF engine in
+ * the loop; every other caller gets the file itself.
+ */
 class PaymentPdfController extends Controller
 {
     public function __construct(
@@ -19,6 +26,8 @@ class PaymentPdfController extends Controller
             return $this->paymentPdfDataProvider->getPdfData($payment);
         }
 
-        return $payment->getGeneratedPDFOrStream('payment');
+        $receipt = $payment->getGeneratedPDFOrStream('payment');
+
+        return $receipt;
     }
 }

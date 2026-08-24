@@ -6,6 +6,12 @@ use App\Domains\Money\Http\Resources\CustomerPortal\CurrencyResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
+/**
+ * Applied tax as the customer portal sees it.
+ *
+ * Trimmed against the admin payload: no expense owner (the portal never shows
+ * purchases), no calculation type or fixed amount, and no tax-type kind.
+ */
 class TaxResource extends JsonResource
 {
     /**
@@ -31,12 +37,14 @@ class TaxResource extends JsonResource
             'base_amount' => $this->base_amount,
             'currency_id' => $this->currency_id,
             'recurring_invoice_id' => $this->recurring_invoice_id,
-            'tax_type' => $this->when($this->taxType()->exists(), function () {
-                return new TaxTypeResource($this->taxType);
-            }),
-            'currency' => $this->when($this->currency()->exists(), function () {
-                return new CurrencyResource($this->currency);
-            }),
+            'tax_type' => $this->when(
+                $this->taxType()->exists(),
+                fn () => new TaxTypeResource($this->taxType)
+            ),
+            'currency' => $this->when(
+                $this->currency()->exists(),
+                fn () => new CurrencyResource($this->currency)
+            ),
         ];
     }
 }

@@ -23,16 +23,24 @@ use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Schema;
 use Laravel\Sanctum\HasApiTokens;
 use Silber\Bouncer\Database\HasRolesAndAbilities;
 use Spatie\MediaLibrary\HasMedia;
 use Spatie\MediaLibrary\InteractsWithMedia;
 
+/**
+ * A staff account.
+ *
+ * Staff reach the application through one or more companies joined by the
+ * `user_company` pivot, and what they may do inside each of them comes from
+ * Bouncer roles scoped to that company. The pre-Bouncer `role` column has one
+ * job left: flagging the platform administrator. Ownership is positional, read
+ * from the active company's owner column rather than from any flag stored here.
+ */
 class User extends Authenticatable implements HasMedia
 {
-    protected $table = 'users';
-
     use HasApiTokens;
     use HasCustomFields;
     use HasFactory;
@@ -40,15 +48,10 @@ class User extends Authenticatable implements HasMedia
     use InteractsWithMedia;
     use Notifiable;
 
-    public function registerMediaCollections(): void
-    {
-        $this->addMediaCollection('admin_avatar')
-            ->useDisk('public')
-            ->singleFile();
-    }
+    protected $table = 'users';
 
     /**
-     * The attributes that are mass assignable.
+     * Everything but the primary key may be mass assigned.
      *
      * @var array
      */
@@ -57,7 +60,7 @@ class User extends Authenticatable implements HasMedia
     ];
 
     /**
-     * The attributes that should be hidden for arrays.
+     * Secrets stripped from every serialized payload.
      *
      * @var array
      */
@@ -66,330 +69,476 @@ class User extends Authenticatable implements HasMedia
         'remember_token',
     ];
 
+    /**
+     * @var array
+     */
     protected $with = [
         'currency',
     ];
 
+    /**
+     * Computed attributes, listed in the order they are serialized.
+     *
+     * @var array
+     */
     protected $appends = [
         'formattedCreatedAt',
         'avatar',
     ];
 
     /**
-     * Find the user instance for the given username.
+     * A staff account keeps a single avatar image on the public disk.
      */
-    public function findForPassport(string $username): ?self
+    public function registerMediaCollections(): void
     {
-        return $this->where('email', $username)->first();
+        $this->addMediaCollection('admin_avatar')->useDisk('public')->singleFile();
     }
 
-    public function setPasswordAttribute(string $value): void
-    {
-        if ($value != null) {
-            $this->attributes['password'] = bcrypt($value);
-        }
-    }
+    /*
+    |--------------------------------------------------------------------------
+    | Relationships
+    |--------------------------------------------------------------------------
+    */
 
-    public function isSuperAdmin(): bool
-    {
-        return $this->role === 'super admin';
-    }
-
-    public function isSuperAdminOrAdmin(): bool
-    {
-        return ($this->role == 'super admin') || ($this->role == 'admin');
-    }
-
-    public static function login(object $request): bool
-    {
-        $remember = $request->remember;
-        $email = $request->email;
-        $password = $request->password;
-
-        return \Auth::attempt(['email' => $email, 'password' => $password], $remember);
-    }
-
-    public function getFormattedCreatedAtAttribute($value)
-    {
-        $companyId = request()->header('company');
-
-        if (! $companyId || ! CompanySetting::where('company_id', $companyId)->exists()) {
-            $firstCompany = $this->companies()->first();
-            if (! $firstCompany) {
-                return Carbon::parse($this->created_at)->format('Y-m-d');
-            }
-            $companyId = $firstCompany->id;
-        }
-
-        $dateFormat = CompanySetting::getSetting('carbon_date_format', $companyId);
-
-        return Carbon::parse($this->created_at)->format($dateFormat);
-    }
-
-    public function estimates(): HasMany
-    {
-        return $this->hasMany(Estimate::class, 'creator_id');
-    }
-
-    public function customers(): HasMany
-    {
-        return $this->hasMany(Customer::class, 'creator_id');
-    }
-
-    public function recurringInvoices(): HasMany
-    {
-        return $this->hasMany(RecurringInvoice::class, 'creator_id');
-    }
-
+    /**
+     * Preferred currency, eager loaded on every query.
+     */
     public function currency(): BelongsTo
     {
         return $this->belongsTo(Currency::class, 'currency_id');
     }
 
+    /**
+     * Whoever created this account, when it was not self-registered.
+     */
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'creator_id');
     }
 
+    /**
+     * Companies this account is a member of.
+     */
     public function companies(): BelongsToMany
     {
         return $this->belongsToMany(Company::class, 'user_company', 'user_id', 'company_id');
     }
 
-    public function expenses(): HasMany
-    {
-        return $this->hasMany(Expense::class, 'creator_id');
-    }
-
-    public function payments(): HasMany
-    {
-        return $this->hasMany(Payment::class, 'creator_id');
-    }
-
-    public function invoices(): HasMany
-    {
-        return $this->hasMany(Invoice::class, 'creator_id');
-    }
-
-    public function items(): HasMany
-    {
-        return $this->hasMany(Item::class, 'creator_id');
-    }
-
+    /**
+     * Per-user preference rows, addressed by their `key` column.
+     */
     public function settings(): HasMany
     {
         return $this->hasMany(UserSetting::class, 'user_id');
     }
 
+    /**
+     * Contacts this account authored.
+     */
+    public function customers(): HasMany
+    {
+        return $this->hasMany(Customer::class, 'creator_id');
+    }
+
+    /**
+     * Catalog entries this account authored.
+     */
+    public function items(): HasMany
+    {
+        return $this->hasMany(Item::class, 'creator_id');
+    }
+
+    /**
+     * Estimates this account authored.
+     */
+    public function estimates(): HasMany
+    {
+        return $this->hasMany(Estimate::class, 'creator_id');
+    }
+
+    /**
+     * Invoices this account authored.
+     */
+    public function invoices(): HasMany
+    {
+        return $this->hasMany(Invoice::class, 'creator_id');
+    }
+
+    /**
+     * Recurring invoice schedules this account authored.
+     */
+    public function recurringInvoices(): HasMany
+    {
+        return $this->hasMany(RecurringInvoice::class, 'creator_id');
+    }
+
+    /**
+     * Payments this account recorded.
+     */
+    public function payments(): HasMany
+    {
+        return $this->hasMany(Payment::class, 'creator_id');
+    }
+
+    /**
+     * Expenses this account recorded.
+     */
+    public function expenses(): HasMany
+    {
+        return $this->hasMany(Expense::class, 'creator_id');
+    }
+
+    /**
+     * Every postal address filed against this account.
+     */
     public function addresses(): HasMany
     {
         return $this->hasMany(Address::class);
     }
 
+    /**
+     * The address flagged for billing.
+     */
     public function billingAddress(): HasOne
     {
         return $this->hasOne(Address::class)->where('type', Address::BILLING_TYPE);
     }
 
+    /**
+     * The address flagged for shipping.
+     */
     public function shippingAddress(): HasOne
     {
         return $this->hasOne(Address::class)->where('type', Address::SHIPPING_TYPE);
     }
 
+    /*
+    |--------------------------------------------------------------------------
+    | Accessors and mutators
+    |--------------------------------------------------------------------------
+    */
+
     /**
-     * Override the mail body for reset password notification mail.
+     * Hash a password on assignment.
+     *
+     * A blank value is skipped so that saving a form which left the field empty
+     * keeps the hash already on file.
      */
-    public function sendPasswordResetNotification($token)
+    public function setPasswordAttribute(string $value): void
     {
-        $this->notify(new MailResetPasswordNotification($token));
+        if ($value === '') {
+            return;
+        }
+
+        $this->attributes['password'] = bcrypt($value);
     }
 
+    /**
+     * Public URL of the avatar, or the number zero when none is attached.
+     */
+    public function getAvatarAttribute()
+    {
+        $image = $this->getMedia('admin_avatar')->first();
+
+        return $image ? asset($image->getUrl()) : 0;
+    }
+
+    /**
+     * Signup timestamp rendered with the date format of the company the
+     * request is acting on.
+     */
+    public function getFormattedCreatedAtAttribute($value)
+    {
+        return Carbon::parse($this->created_at)->format($this->contextDateFormat());
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Query scopes
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Sort by a caller-supplied column, sanitised before it reaches SQL.
+     */
     public function scopeWhereOrder($query, $orderByField, $orderBy)
     {
-        SafeOrderBy::apply($query, $orderByField, $orderBy);
+        return SafeOrderBy::apply($query, $orderByField, $orderBy, 'created_at');
     }
 
+    /**
+     * Keep only accounts matching every whitespace-separated term, a term
+     * counting as matched when it turns up in the name, the email or the phone.
+     */
     public function scopeWhereSearch($query, $search)
     {
-        foreach (explode(' ', $search) as $term) {
-            $query->where(function ($query) use ($term) {
-                $query->where('name', 'LIKE', '%'.$term.'%')
-                    ->orWhere('email', 'LIKE', '%'.$term.'%')
-                    ->orWhere('phone', 'LIKE', '%'.$term.'%');
+        $terms = explode(' ', $search);
+
+        foreach ($terms as $term) {
+            $needle = self::wildcard($term);
+
+            $query->where(function ($match) use ($needle) {
+                $match->where('name', 'LIKE', $needle)
+                    ->orWhere('email', 'LIKE', $needle)
+                    ->orWhere('phone', 'LIKE', $needle);
             });
         }
     }
 
+    /**
+     * Partial match on the contact person.
+     */
     public function scopeWhereContactName($query, $contactName)
     {
-        return $query->where('contact_name', 'LIKE', '%'.$contactName.'%');
+        return $query->where('contact_name', 'LIKE', self::wildcard($contactName));
     }
 
+    /**
+     * Partial match on the name the account is displayed under.
+     */
     public function scopeWhereDisplayName($query, $displayName)
     {
-        return $query->where('name', 'LIKE', '%'.$displayName.'%');
+        return $query->where('name', 'LIKE', self::wildcard($displayName));
     }
 
+    /**
+     * Partial match on the phone number.
+     */
     public function scopeWherePhone($query, $phone)
     {
-        return $query->where('phone', 'LIKE', '%'.$phone.'%');
+        return $query->where('phone', 'LIKE', self::wildcard($phone));
     }
 
+    /**
+     * Partial match on the email address.
+     */
     public function scopeWhereEmail($query, $email)
     {
-        return $query->where('email', 'LIKE', '%'.$email.'%');
+        return $query->where('email', 'LIKE', self::wildcard($email));
     }
 
+    /**
+     * Keep only members of the company the request is acting on.
+     */
     public function scopeWhereCompany($query)
     {
-        return $query->whereHas('companies', function ($q) {
-            $q->where('company_id', request()->header('company'));
+        $company = request()->header('company');
+
+        return $query->whereHas('companies', function ($membership) use ($company) {
+            $membership->where('company_id', $company);
         });
     }
 
-    public function scopePaginateData($query, $limit)
-    {
-        if ($limit == 'all') {
-            return $query->get();
-        }
-
-        return $query->paginate($limit);
-    }
-
-    public function scopeApplyFilters($query, array $filters)
-    {
-        $filters = collect($filters);
-
-        if ($filters->get('search')) {
-            $query->whereSearch($filters->get('search'));
-        }
-
-        if ($filters->get('display_name')) {
-            $query->whereDisplayName($filters->get('display_name'));
-        }
-
-        if ($filters->get('email')) {
-            $query->whereEmail($filters->get('email'));
-        }
-
-        if ($filters->get('phone')) {
-            $query->wherePhone($filters->get('phone'));
-        }
-
-        if ($filters->get('role')) {
-            $query->whereHas('roles', function ($q) use ($filters) {
-                $q->where('roles.id', $filters->get('role'));
-            });
-        }
-
-        if ($filters->get('orderByField') || $filters->get('orderBy')) {
-            $field = $filters->get('orderByField') ? $filters->get('orderByField') : 'name';
-            $orderBy = $filters->get('orderBy') ? $filters->get('orderBy') : 'asc';
-            $query->whereOrder($field, $orderBy);
-        }
-    }
-
+    /**
+     * Widen a listing to also take in the platform administrator.
+     */
     public function scopeWhereSuperAdmin($query)
     {
         $query->orWhere('role', 'super admin');
     }
 
-    public function scopeApplyInvoiceFilters($query, array $filters)
+    /**
+     * Return the whole result set for the sentinel limit "all", otherwise a
+     * page of the requested size.
+     */
+    public function scopePaginateData($query, $limit)
     {
-        $filters = collect($filters);
-
-        if ($filters->get('from_date') && $filters->get('to_date')) {
-            $start = Carbon::createFromFormat('Y-m-d', $filters->get('from_date'));
-            $end = Carbon::createFromFormat('Y-m-d', $filters->get('to_date'));
-            $query->invoicesBetween($start, $end);
-        }
-    }
-
-    public function scopeInvoicesBetween($query, $start, $end)
-    {
-        $query->whereHas('invoices', function ($query) use ($start, $end) {
-            $query->whereBetween(
-                'invoice_date',
-                [$start->format('Y-m-d'), $end->format('Y-m-d')]
-            );
-        });
-    }
-
-    public function getAvatarAttribute()
-    {
-        $avatar = $this->getMedia('admin_avatar')->first();
-
-        if ($avatar) {
-            return asset($avatar->getUrl());
-        }
-
-        return 0;
+        return $limit == 'all' ? $query->get() : $query->paginate($limit);
     }
 
     /**
-     * Bulk upsert user settings, creating or updating each key-value pair.
+     * Run every listed filter that carries a value.
+     */
+    public function scopeApplyFilters($query, array $filters)
+    {
+        $scopes = [
+            'search' => 'whereSearch',
+            'display_name' => 'whereDisplayName',
+            'email' => 'whereEmail',
+            'phone' => 'wherePhone',
+        ];
+
+        foreach ($scopes as $filter => $scope) {
+            $value = $filters[$filter] ?? null;
+
+            if ($value) {
+                $query->{$scope}($value);
+            }
+        }
+
+        $role = $filters['role'] ?? null;
+
+        if ($role) {
+            $query->whereHas('roles', function ($assigned) use ($role) {
+                $assigned->where('roles.id', $role);
+            });
+        }
+
+        $sortField = $filters['orderByField'] ?? null;
+        $sortDirection = $filters['orderBy'] ?? null;
+
+        if ($sortField || $sortDirection) {
+            $query->whereOrder($sortField ?: 'name', $sortDirection ?: 'asc');
+        }
+    }
+
+    /**
+     * Restrict to accounts who authored an invoice inside a date range, when
+     * the caller supplied both ends of it.
+     */
+    public function scopeApplyInvoiceFilters($query, array $filters)
+    {
+        $from = $filters['from_date'] ?? null;
+        $to = $filters['to_date'] ?? null;
+
+        if ($from && $to) {
+            $query->invoicesBetween(
+                Carbon::createFromFormat('Y-m-d', $from),
+                Carbon::createFromFormat('Y-m-d', $to)
+            );
+        }
+    }
+
+    /**
+     * Restrict to accounts holding at least one invoice dated inside the
+     * inclusive range.
+     */
+    public function scopeInvoicesBetween($query, $start, $end)
+    {
+        $range = [$start->format('Y-m-d'), $end->format('Y-m-d')];
+
+        $query->whereHas('invoices', function ($invoices) use ($range) {
+            $invoices->whereBetween('invoice_date', $range);
+        });
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Settings
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Write a batch of preferences, replacing the value of any key already on
+     * file and inserting the rest.
      */
     public function setSettings(array $settings): void
     {
-        foreach ($settings as $key => $value) {
-            $this->settings()->updateOrCreate(
-                [
-                    'key' => $key,
-                ],
-                [
-                    'key' => $key,
-                    'value' => $value,
-                ]
-            );
+        foreach ($settings as $option => $value) {
+            $this->settings()->updateOrCreate(['key' => $option], ['key' => $option, 'value' => $value]);
         }
     }
 
-    public function hasCompany(int $company_id): bool
-    {
-        $companies = $this->companies()->pluck('company_id')->toArray();
-
-        return in_array($company_id, $companies);
-    }
-
+    /**
+     * Every preference on file for this account, keyed by setting name.
+     */
     public function getAllSettings(): Collection
     {
-        return $this->settings()->get()->mapWithKeys(function ($item) {
-            return [$item['key'] => $item['value']];
-        });
-    }
-
-    public function getSettings(array $settings): Collection
-    {
-        return $this->settings()->whereIn('key', $settings)->get()->mapWithKeys(function ($item) {
-            return [$item['key'] => $item['value']];
-        });
+        return $this->flattenSettings($this->settings()->get());
     }
 
     /**
-     * Determine whether the user is the owner of the current company.
+     * The named preferences only; keys with no row on file are left out.
+     */
+    public function getSettings(array $settings): Collection
+    {
+        return $this->flattenSettings($this->settings()->whereIn('key', $settings)->get());
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Identity and access
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Resolve an account from the identifier a token grant was asked for.
+     */
+    public function findForPassport(string $username): ?self
+    {
+        return $this->newQuery()->where('email', $username)->first();
+    }
+
+    /**
+     * Start a session from a request-like object carrying the credentials.
+     */
+    public static function login(object $request): bool
+    {
+        $credentials = [
+            'email' => $request->email,
+            'password' => $request->password,
+        ];
+
+        return Auth::attempt($credentials, $request->remember);
+    }
+
+    /**
+     * Deliver a password reset link pointing at the SPA reset screen.
+     */
+    public function sendPasswordResetNotification($token)
+    {
+        $notification = new MailResetPasswordNotification($token);
+
+        $this->notify($notification);
+    }
+
+    /**
+     * Whether this account is the platform administrator.
+     */
+    public function isSuperAdmin(): bool
+    {
+        return $this->role === 'super admin';
+    }
+
+    /**
+     * Whether the pre-Bouncer `role` column marks this account as privileged.
+     */
+    public function isSuperAdminOrAdmin(): bool
+    {
+        return $this->hasLegacyAdminRole();
+    }
+
+    /**
+     * Whether this account is a member of the given company.
+     */
+    public function hasCompany(int $company_id): bool
+    {
+        return $this->companies()->pluck('company_id')->contains($company_id);
+    }
+
+    /**
+     * Whether this account owns the company the request is acting on.
+     *
+     * Ownership is positional: it is read from the company's owner column, so
+     * transferring ownership flips authorization immediately. Installs that
+     * have not run the migration adding that column fall back to the old role
+     * strings.
      */
     public function isOwner(): bool
     {
-        if (Schema::hasColumn('companies', 'owner_id')) {
-            $company = Company::find(request()->header('company'));
-
-            if ($company && $this->id == $company->owner_id) {
-                return true;
-            }
-        } else {
-            return $this->role == 'super admin' || $this->role == 'admin';
+        if (! Schema::hasColumn('companies', 'owner_id')) {
+            return $this->hasLegacyAdminRole();
         }
 
-        return false;
+        $active = Company::find(request()->header('company'));
+
+        return $active && $this->id == $active->owner_id;
     }
 
     /**
-     * Check whether the user has the required permissions based on ability data,
-     * considering super-admin status, company ownership, and Bouncer abilities.
+     * Decide whether a navigation entry's requirements are met.
+     *
+     * Entries reserved for the platform administrator are settled by that gate
+     * alone. Owners of the active company clear everything else. Everyone else
+     * needs the named ability, checked against the entry's subject model first
+     * and against the bare ability afterwards; an entry naming no ability at
+     * all is open.
      */
     public function checkAccess(object $data): bool
     {
-        if (! empty($data->data['super_admin_only']) && $data->data['super_admin_only']) {
+        $meta = $data->data;
+
+        if (! empty($meta['super_admin_only'])) {
             return $this->isSuperAdmin();
         }
 
@@ -397,18 +546,76 @@ class User extends Authenticatable implements HasMedia
             return true;
         }
 
-        if ((! $data->data['owner_only']) && empty($data->data['ability'])) {
+        if ($meta['owner_only']) {
+            return false;
+        }
+
+        if (empty($meta['ability'])) {
             return true;
         }
 
-        if ((! $data->data['owner_only']) && (! empty($data->data['ability'])) && (! empty($data->data['model'])) && $this->can($data->data['ability'], $data->data['model'])) {
+        if (! empty($meta['model']) && $this->can($meta['ability'], $meta['model'])) {
             return true;
         }
 
-        if ((! $data->data['owner_only']) && $this->can($data->data['ability'])) {
-            return true;
+        return $this->can($meta['ability']);
+    }
+
+    /*
+    |--------------------------------------------------------------------------
+    | Internals
+    |--------------------------------------------------------------------------
+    */
+
+    /**
+     * Date format of the company the request is acting on, falling back to the
+     * first company this account belongs to and to an ISO-style date when it
+     * belongs to none.
+     */
+    private function contextDateFormat(): mixed
+    {
+        $scope = request()->header('company');
+
+        $configured = $scope
+            && CompanySetting::query()->where('company_id', $scope)->exists();
+
+        if (! $configured) {
+            $home = $this->companies()->first();
+
+            if (! $home) {
+                return 'Y-m-d';
+            }
+
+            $scope = $home->id;
         }
 
-        return false;
+        return CompanySetting::getSetting('carbon_date_format', $scope);
+    }
+
+    /**
+     * The pre-Bouncer administrator test, kept for installs whose companies
+     * table has not gained its ownership column yet.
+     */
+    private function hasLegacyAdminRole(): bool
+    {
+        return in_array($this->role, ['super admin', 'admin']);
+    }
+
+    /**
+     * Reduce preference rows to a name => value collection.
+     */
+    private function flattenSettings(Collection $rows): Collection
+    {
+        return $rows->mapWithKeys(function ($row) {
+            return [$row['key'] => $row['value']];
+        });
+    }
+
+    /**
+     * Wrap a term for a substring LIKE comparison.
+     */
+    private static function wildcard($term): string
+    {
+        return '%'.$term.'%';
     }
 }

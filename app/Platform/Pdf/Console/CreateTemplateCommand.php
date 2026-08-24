@@ -8,6 +8,14 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 
+/**
+ * Scaffolds a custom PDF template by cloning one of the designs the
+ * application ships, along with the partials and the repeating
+ * header/footer that come with it.
+ *
+ * Whether the name is yours to choose or has to match the document being
+ * replaced depends on the type; the two constants below spell that out.
+ */
 class CreateTemplateCommand extends Command
 {
     /**
@@ -37,22 +45,13 @@ class CreateTemplateCommand extends Command
         return array_merge(self::SELECTABLE_TYPES, array_keys(self::OVERRIDE_TYPES));
     }
 
-    /**
-     * The name and signature of the console command.
-     *
-     * @var string
-     */
     protected $signature = 'make:template {name} {--type=}';
 
-    /**
-     * The console command description.
-     *
-     * @var string
-     */
     protected $description = 'Create estimate or invoice pdf template.';
 
     /**
-     * Execute the console command.
+     * Clone a shipped design into the custom-template area, where it can be
+     * edited without disturbing the one the application ships.
      */
     public function handle(): int
     {

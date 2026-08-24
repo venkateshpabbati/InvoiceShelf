@@ -21,10 +21,16 @@ use App\Platform\Pdf\Rendering\PdfTemplateUtils;
 use App\Support\Hashids\HashidConnection;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\View;
 use Illuminate\Validation\ValidationException;
 
 class InvoiceService implements InvoicePdfDataProvider
 {
+    /**
+     * Relations a single-document payload is always returned with.
+     */
+    private const DETAIL_RELATIONS = ['items', 'items.fields', 'items.fields.customField', 'customer', 'taxes', 'creditNotes'];
+
     public function __construct(
         private readonly DocumentItemService $documentItemService,
         private readonly CreditNoteService $creditNoteService,
@@ -48,14 +54,18 @@ class InvoiceService implements InvoicePdfDataProvider
         $invoice = Invoice::create($attributes);
 
         $serial = (new SerialNumberService)
-            ->setModel($invoice)
             ->setCompany($invoice->company_id)
             ->setCustomer($invoice->customer_id)
             ->setSequenceScope(['type' => Invoice::TYPE_INVOICE])
+            ->setModel($invoice)
             ->setNextNumbers();
 
-        $invoice->sequence_number = $serial->nextSequenceNumber;
-        $invoice->customer_sequence_number = $serial->nextCustomerSequenceNumber;
+        // Both sequences fall out of the same resolution pass. The visible
+        // number itself is rendered client-side and arrived with the payload.
+        $invoice->fill([
+            'sequence_number' => $serial->nextSequenceNumber,
+            'customer_sequence_number' => $serial->nextCustomerSequenceNumber,
+        ]);
         $invoice->unique_hash = Hashids::connection(HashidConnection::Invoice->value)->encode($invoice->id);
         $invoice->save();
 
@@ -75,14 +85,7 @@ class InvoiceService implements InvoicePdfDataProvider
             $this->customFieldValueWriter->attach($invoice, $customFields);
         }
 
-        return Invoice::with([
-            'items',
-            'items.fields',
-            'items.fields.customField',
-            'customer',
-            'taxes',
-            'creditNotes',
-        ])->findOrFail($invoice->id);
+        return Invoice::with(self::DETAIL_RELATIONS)->findOrFail($invoice->id);
     }
 
     /**
@@ -96,8 +99,8 @@ class InvoiceService implements InvoicePdfDataProvider
         ?iterable $customFields = null,
     ): Invoice {
         $serial = (new SerialNumberService)
-            ->setModel($invoice)
             ->setCompany($invoice->company_id)
+            ->setModel($invoice)
             ->setCustomer($attributes['customer_id'])
             ->setSequenceScope(['type' => Invoice::TYPE_INVOICE])
             ->setModelObject($invoice->id)
@@ -142,13 +145,13 @@ class InvoiceService implements InvoicePdfDataProvider
             $this->exchangeRateRecorder->record($invoice);
         }
 
-        $invoice->items->map(function ($item) {
-            $fields = $item->fields()->get();
-
-            $fields->map(function ($field) {
-                $field->delete();
-            });
-        });
+        // Answers to item-level custom fields have no cascade of their own,
+        // so they are cleared row by row before the items are replaced.
+        foreach ($invoice->items as $lineItem) {
+            foreach ($lineItem->fields()->get() as $answer) {
+                $answer->delete();
+            }
+        }
 
         $invoice->items()->delete();
         $invoice->taxes()->delete();
@@ -163,14 +166,7 @@ class InvoiceService implements InvoicePdfDataProvider
             $this->customFieldValueWriter->update($invoice, $customFields);
         }
 
-        return Invoice::with([
-            'items',
-            'items.fields',
-            'items.fields.customField',
-            'customer',
-            'taxes',
-            'creditNotes',
-        ])->findOrFail($invoice->id);
+        return Invoice::with(self::DETAIL_RELATIONS)->findOrFail($invoice->id);
     }
 
     public function delete(Collection $ids): bool
@@ -190,8 +186,10 @@ class InvoiceService implements InvoicePdfDataProvider
                 ]);
             }
 
-            if ($invoice->transactions()->exists()) {
-                $invoice->transactions()->delete();
+            $transactions = $invoice->transactions();
+
+            if ($transactions->exists()) {
+                $transactions->delete();
             }
 
             if ($invoice->isCreditNote() && $invoice->related_invoice_id && ! $ids->contains($invoice->related_invoice_id)) {
@@ -239,10 +237,7 @@ class InvoiceService implements InvoicePdfDataProvider
     {
         $data = $this->sendInvoiceData($invoice, $data);
 
-        return [
-            'type' => 'preview',
-            'view' => new SendInvoiceMail($data),
-        ];
+        return ['type' => 'preview', 'view' => new SendInvoiceMail($data)];
     }
 
     public function send(Invoice $invoice, array $data): array
@@ -271,15 +266,15 @@ class InvoiceService implements InvoicePdfDataProvider
 
         if ($invoice->tax_per_item === 'YES') {
             foreach ($invoice->items as $item) {
-                foreach ($item->taxes as $tax) {
-                    $found = $taxes->filter(function ($item) use ($tax) {
-                        return $item->tax_type_id == $tax->tax_type_id;
-                    })->first();
+                foreach ($item->taxes as $appliedTax) {
+                    // Rows of one tax type collapse onto the first row seen for
+                    // it, which then carries the running total for the document.
+                    $running = $taxes->first(fn ($seen) => $seen->tax_type_id == $appliedTax->tax_type_id);
 
-                    if ($found) {
-                        $found->amount += $tax->amount;
+                    if ($running) {
+                        $running->amount += $appliedTax->amount;
                     } else {
-                        $taxes->push($tax);
+                        $taxes->push($appliedTax);
                     }
                 }
             }
@@ -293,14 +288,15 @@ class InvoiceService implements InvoicePdfDataProvider
         $invoice->loadMissing(['relatedInvoice', 'creditNotes']);
 
         $company = Company::find($invoice->company_id);
-        $locale = CompanySetting::getSetting('language', $company->id);
-        $customFields = CustomField::where('model_type', 'Item')->get();
+        $language = CompanySetting::getSetting('language', $company->id);
+        $customFields = CustomField::query()->where('model_type', 'Item')->get();
 
-        App::setLocale($locale);
+        App::setLocale($language);
 
+        // Absent for a company that never uploaded one; the templates cope.
         $logo = $company->logo_path;
 
-        view()->share([
+        View::share([
             'invoice' => $invoice,
             'customFields' => $customFields,
             'company_address' => $invoice->getCompanyAddress(),
@@ -313,7 +309,10 @@ class InvoiceService implements InvoicePdfDataProvider
 
         $templatePath = PdfTemplateUtils::resolveView('invoice', $invoiceTemplate, 'invoice1');
 
-        if (request()->has('preview')) {
+        // `?preview` hands back the raw HTML instead of a rendered PDF.
+        $wantsHtmlPreview = request()->has('preview');
+
+        if ($wantsHtmlPreview) {
             return view($templatePath);
         }
 
@@ -329,59 +328,59 @@ class InvoiceService implements InvoicePdfDataProvider
         $date = Carbon::now();
 
         $serial = (new SerialNumberService)
-            ->setModel($invoice)
             ->setCompany($invoice->company_id)
             ->setCustomer($invoice->customer_id)
             ->setSequenceScope(['type' => Invoice::TYPE_INVOICE])
+            ->setModel($invoice)
             ->setNextNumbers();
 
         $dueDate = null;
-        $dueDateEnabled = CompanySetting::getSetting(
-            'invoice_set_due_date_automatically',
-            $invoice->company_id
-        );
+        $autoDueDate = CompanySetting::getSetting('invoice_set_due_date_automatically', $invoice->company_id);
 
-        if ($dueDateEnabled === 'YES') {
-            $dueDateDays = intval(CompanySetting::getSetting(
-                'invoice_due_date_days',
-                $invoice->company_id
-            ));
+        if ($autoDueDate === 'YES') {
+            $dueDateDays = (int) CompanySetting::getSetting('invoice_due_date_days', $invoice->company_id);
             $dueDate = Carbon::now()->addDays($dueDateDays)->format('Y-m-d');
         }
 
         $exchangeRate = $invoice->exchange_rate;
 
+        // Columns the copy inherits unchanged. Everything outside this list is
+        // either dated today, renumbered, or derived from the exchange rate.
+        $carriedOver = $invoice->only([
+            'reference_number',
+            'customer_id',
+            'company_id',
+            'template_name',
+            'currency_id',
+            'sub_total',
+            'discount',
+            'discount_type',
+            'discount_val',
+            'tax',
+            'total',
+            'tax_per_item',
+            'discount_per_item',
+            'notes',
+            'sales_tax_type',
+            'sales_tax_address_type',
+        ]);
+
         $newInvoice = Invoice::create([
-            'invoice_date' => $date->format('Y-m-d'),
+            'invoice_date' => $date->toDateString(),
             'due_date' => $dueDate,
             'invoice_number' => $serial->getNextNumber(),
             'sequence_number' => $serial->nextSequenceNumber,
             'customer_sequence_number' => $serial->nextCustomerSequenceNumber,
-            'reference_number' => $invoice->reference_number,
-            'customer_id' => $invoice->customer_id,
-            'company_id' => $invoice->company_id,
-            'template_name' => $invoice->template_name,
             'status' => Invoice::STATUS_DRAFT,
             'paid_status' => Invoice::STATUS_UNPAID,
-            'sub_total' => $invoice->sub_total,
-            'discount' => $invoice->discount,
-            'discount_type' => $invoice->discount_type,
-            'discount_val' => $invoice->discount_val,
-            'total' => $invoice->total,
             'due_amount' => $invoice->total,
-            'tax_per_item' => $invoice->tax_per_item,
-            'discount_per_item' => $invoice->discount_per_item,
-            'tax' => $invoice->tax,
-            'notes' => $invoice->notes,
             'exchange_rate' => $exchangeRate,
             'base_total' => $invoice->total * $exchangeRate,
             'base_discount_val' => $invoice->discount_val * $exchangeRate,
             'base_sub_total' => $invoice->sub_total * $exchangeRate,
             'base_tax' => $invoice->tax * $exchangeRate,
             'base_due_amount' => $invoice->total * $exchangeRate,
-            'currency_id' => $invoice->currency_id,
-            'sales_tax_type' => $invoice->sales_tax_type,
-            'sales_tax_address_type' => $invoice->sales_tax_address_type,
+            ...$carriedOver,
         ]);
 
         $newInvoice->unique_hash = Hashids::connection(HashidConnection::Invoice->value)->encode($newInvoice->id);
@@ -395,14 +394,10 @@ class InvoiceService implements InvoicePdfDataProvider
         }
 
         if ($invoice->fields()->exists()) {
-            $customFields = [];
-
-            foreach ($invoice->fields as $data) {
-                $customFields[] = [
-                    'id' => $data->custom_field_id,
-                    'value' => $data->defaultAnswer,
-                ];
-            }
+            $customFields = $invoice->fields->map(fn ($answer) => [
+                'id' => $answer->custom_field_id,
+                'value' => $answer->defaultAnswer,
+            ])->all();
 
             $this->customFieldValueWriter->attach($newInvoice, $customFields);
         }
@@ -415,42 +410,49 @@ class InvoiceService implements InvoicePdfDataProvider
         $invoice->load(['items', 'items.taxes', 'customer', 'taxes']);
 
         $serial = (new SerialNumberService)
-            ->setModel(new Estimate)
             ->setCompany($invoice->company_id)
             ->setCustomer($invoice->customer_id)
+            ->setModel(new Estimate)
             ->setNextNumbers();
 
         $exchangeRate = $invoice->exchange_rate;
 
+        // Columns the offer inherits unchanged from the document it replaces.
+        $carriedOver = $invoice->only([
+            'creator_id',
+            'customer_id',
+            'company_id',
+            'currency_id',
+            'sub_total',
+            'discount',
+            'discount_type',
+            'discount_val',
+            'tax',
+            'total',
+            'tax_per_item',
+            'discount_per_item',
+            'notes',
+            'sales_tax_type',
+            'sales_tax_address_type',
+        ]);
+
         $estimate = Estimate::create([
-            'creator_id' => $invoice->creator_id,
             'estimate_date' => Carbon::now()->format('Y-m-d'),
             'expiry_date' => Carbon::now()->addDays(30)->format('Y-m-d'),
             'estimate_number' => $serial->getNextNumber(),
             'sequence_number' => $serial->nextSequenceNumber,
             'customer_sequence_number' => $serial->nextCustomerSequenceNumber,
+            // A second, independent rendering of the same number format rather
+            // than a copy of the number above.
             'reference_number' => $serial->getNextNumber(),
-            'customer_id' => $invoice->customer_id,
-            'company_id' => $invoice->company_id,
             'template_name' => $invoice->getEstimateTemplateName(),
             'status' => Estimate::STATUS_DRAFT,
-            'sub_total' => $invoice->sub_total,
-            'discount' => $invoice->discount,
-            'discount_type' => $invoice->discount_type,
-            'discount_val' => $invoice->discount_val,
-            'total' => $invoice->total,
-            'tax_per_item' => $invoice->tax_per_item,
-            'discount_per_item' => $invoice->discount_per_item,
-            'tax' => $invoice->tax,
-            'notes' => $invoice->notes,
             'exchange_rate' => $exchangeRate,
             'base_discount_val' => $invoice->discount_val * $exchangeRate,
             'base_sub_total' => $invoice->sub_total * $exchangeRate,
             'base_total' => $invoice->total * $exchangeRate,
             'base_tax' => $invoice->tax * $exchangeRate,
-            'currency_id' => $invoice->currency_id,
-            'sales_tax_type' => $invoice->sales_tax_type,
-            'sales_tax_address_type' => $invoice->sales_tax_address_type,
+            ...$carriedOver,
         ]);
 
         $estimate->unique_hash = Hashids::connection(HashidConnection::Estimate->value)->encode($estimate->id);
@@ -463,14 +465,10 @@ class InvoiceService implements InvoicePdfDataProvider
         }
 
         if ($invoice->fields()->exists()) {
-            $customFields = [];
-
-            foreach ($invoice->fields as $data) {
-                $customFields[] = [
-                    'id' => $data->custom_field_id,
-                    'value' => $data->defaultAnswer,
-                ];
-            }
+            $customFields = $invoice->fields->map(fn ($answer) => [
+                'id' => $answer->custom_field_id,
+                'value' => $answer->defaultAnswer,
+            ])->all();
 
             $this->customFieldValueWriter->attach($estimate, $customFields);
         }

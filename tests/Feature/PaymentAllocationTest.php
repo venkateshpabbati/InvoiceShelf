@@ -16,9 +16,9 @@ use Illuminate\Validation\ValidationException;
 use Laravel\Sanctum\Sanctum;
 use Silber\Bouncer\BouncerFacade;
 
-beforeEach(function () {
-    Artisan::call('db:seed', ['--class' => 'DatabaseSeeder', '--force' => true]);
-    Artisan::call('db:seed', ['--class' => 'DemoSeeder', '--force' => true]);
+beforeEach(function (): void {
+    Artisan::call('db:seed', ['--force' => true, '--class' => 'DatabaseSeeder']);
+    Artisan::call('db:seed', ['--force' => true, '--class' => 'DemoSeeder']);
 });
 
 function allocatableInvoice(int $amount = 10000): Invoice
@@ -42,9 +42,7 @@ function allocatableInvoice(int $amount = 10000): Invoice
 function allocationPayment(Invoice $invoice, int $amount): Payment
 {
     return Payment::factory()->create([
-        'company_id' => $invoice->company_id,
-        'customer_id' => $invoice->customer_id,
-        'currency_id' => $invoice->currency_id,
+        ...$invoice->only(['company_id', 'customer_id', 'currency_id']),
         'amount' => $amount,
         'base_amount' => $amount,
         'exchange_rate' => 1,
@@ -132,15 +130,11 @@ test('allocations reject mismatched currencies, customers, drafts, and credit no
             'currency_id' => $otherCurrency->id,
         ]),
         allocatableInvoice(100)->forceFill([
-            'company_id' => $invoice->company_id,
-            'customer_id' => $invoice->customer_id,
-            'currency_id' => $invoice->currency_id,
+            ...$invoice->only(['company_id', 'customer_id', 'currency_id']),
             'status' => Invoice::STATUS_DRAFT,
         ]),
         allocatableInvoice(100)->forceFill([
-            'company_id' => $invoice->company_id,
-            'customer_id' => $invoice->customer_id,
-            'currency_id' => $invoice->currency_id,
+            ...$invoice->only(['company_id', 'customer_id', 'currency_id']),
             'type' => Invoice::TYPE_CREDIT_NOTE,
         ]),
     ])->each->save();

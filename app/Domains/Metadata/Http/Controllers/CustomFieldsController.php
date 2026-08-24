@@ -8,8 +8,15 @@ use App\Domains\Metadata\Http\Resources\CustomFieldResource;
 use App\Domains\Metadata\Models\CustomField;
 use App\Platform\Http\Controller;
 use Illuminate\Http\Request;
-use Illuminate\Http\Response;
 
+/**
+ * The definitions behind the extra questions a company asks on its records.
+ *
+ * A definition carries its own default answer, which arrives beside the
+ * validated attributes rather than among them: the form request never lists
+ * `default_answer`, because the column it belongs in follows from the field's
+ * input type and is settled by the service.
+ */
 class CustomFieldsController extends Controller
 {
     public function __construct(
@@ -17,49 +24,47 @@ class CustomFieldsController extends Controller
     ) {}
 
     /**
-     * Display a listing of the resource.
+     * A page of the company's definitions, newest first.
      *
-     * @return Response
+     * The raw input goes to the filter scope untouched, so `type` (matched
+     * against the model the field is attached to) and `search` are both read
+     * there. A `limit` of "all" makes the pagination scope hand back the whole
+     * collection instead of a paginator; with no `limit` a page holds five.
      */
     public function index(Request $request)
     {
         $this->authorize('viewAny', CustomField::class);
 
-        $limit = $request->has('limit') ? $request->limit : 5;
+        $perPage = $request->has('limit') ? $request->limit : 5;
 
-        $customFields = CustomField::applyFilters($request->all())
+        $definitions = CustomField::applyFilters($request->all())
             ->whereCompany()
             ->latest()
-            ->paginateData($limit);
+            ->paginateData($perPage);
 
-        return CustomFieldResource::collection($customFields);
+        return CustomFieldResource::collection($definitions);
     }
 
     /**
-     * Store a newly created resource in storage.
-     *
-     * @param  \Illuminate\Http\CustomFieldRequest  $request
-     * @return Response
+     * Define a new field. The company comes from the request header rather
+     * than the body, and the slug is minted once, here, from the model type
+     * and the name.
      */
     public function store(CustomFieldRequest $request)
     {
         $this->authorize('create', CustomField::class);
 
+        $companyId = (int) $request->header('company');
+
         $customField = $this->customFieldService->create(
             $request->validated(),
             $request->input('default_answer'),
-            (int) $request->header('company'),
+            $companyId,
         );
 
         return new CustomFieldResource($customField);
     }
 
-    /**
-     * Display the specified resource.
-     *
-     * @param  int  $id
-     * @return Response
-     */
     public function show(CustomField $customField)
     {
         $this->authorize('view', $customField);
@@ -68,11 +73,9 @@ class CustomFieldsController extends Controller
     }
 
     /**
-     * Update the specified resource in storage.
-     *
-     * @param  Request  $request
-     * @param  int  $id
-     * @return Response
+     * Rewrite a definition in place. The slug is not among the attributes the
+     * service touches, so a renamed field answers to the name it was born
+     * with — which is what keeps existing formatting placeholders working.
      */
     public function update(CustomFieldRequest $request, CustomField $customField)
     {
@@ -88,17 +91,23 @@ class CustomFieldsController extends Controller
     }
 
     /**
-     * Remove the specified resource from storage.
+     * Delete a definition together with every answer ever recorded against it.
      *
-     * @param  int  $id
-     * @return Response
+     * The payload publishes `in_use`, but this endpoint never consults it:
+     * stored answers are swept first, the definition goes second, and there is
+     * no guard and nothing to confirm. Warning the operator is left to the
+     * interface. The probe in front of the sweep is redundant — an
+     * unconditional delete would remove the same rows — and is kept so the
+     * query trace stays what callers have always seen.
      */
     public function destroy(CustomField $customField)
     {
         $this->authorize('delete', $customField);
 
-        if ($customField->customFieldValues()->exists()) {
-            $customField->customFieldValues()->delete();
+        $answers = $customField->customFieldValues();
+
+        if ($answers->exists()) {
+            $answers->delete();
         }
 
         $customField->forceDelete();

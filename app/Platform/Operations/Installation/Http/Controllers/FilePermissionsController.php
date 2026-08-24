@@ -8,32 +8,23 @@ use Illuminate\Http\JsonResponse;
 
 class FilePermissionsController extends Controller
 {
-    /**
-     * @var PermissionsChecker
-     */
-    protected $permissions;
+    protected FilePermissionChecker $permissions;
 
-    /**
-     * @param  PermissionsChecker  $checker
-     */
     public function __construct(FilePermissionChecker $checker)
     {
         $this->permissions = $checker;
     }
 
     /**
-     * Display the permissions check page.
-     *
-     * @return JsonResponse
+     * Second wizard gate: the writability of the folders listed in
+     * config/installer.php.
      */
-    public function permissions()
+    public function permissions(): JsonResponse
     {
-        $permissions = $this->permissions->check(
-            config('installer.permissions')
-        );
-
         return response()->json([
-            'permissions' => $permissions,
+            'permissions' => $this->permissions->check(
+                config('installer.permissions')
+            ),
         ]);
     }
 }

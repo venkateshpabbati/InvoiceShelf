@@ -90,12 +90,18 @@ class RecurringInvoiceService
         foreach ($ids as $id) {
             $recurringInvoice = RecurringInvoice::find($id);
 
-            if ($recurringInvoice->invoices()->exists()) {
-                $recurringInvoice->invoices()->update(['recurring_invoice_id' => null]);
+            // Invoices already generated outlive their template; all they lose
+            // is the link back to it.
+            $generated = $recurringInvoice->invoices();
+
+            if ($generated->exists()) {
+                $generated->update(['recurring_invoice_id' => null]);
             }
 
-            if ($recurringInvoice->items()->exists()) {
-                $recurringInvoice->items()->delete();
+            $lineItems = $recurringInvoice->items();
+
+            if ($lineItems->exists()) {
+                $lineItems->delete();
             }
 
             if ($recurringInvoice->taxes()->exists()) {
@@ -155,8 +161,8 @@ class RecurringInvoiceService
         }
 
         $newInvoice['creator_id'] = $recurringInvoice->creator_id;
-        $newInvoice['invoice_date'] = Carbon::today()->format('Y-m-d');
-        $newInvoice['due_date'] = Carbon::today()->addDays($days)->format('Y-m-d');
+        $newInvoice['invoice_date'] = Carbon::today()->toDateString();
+        $newInvoice['due_date'] = Carbon::today()->addDays($days)->toDateString();
         $newInvoice['status'] = Invoice::STATUS_DRAFT;
         $newInvoice['company_id'] = $recurringInvoice->company_id;
         $newInvoice['paid_status'] = Invoice::STATUS_UNPAID;
@@ -178,14 +184,20 @@ class RecurringInvoiceService
         $newInvoice['exchange_rate'] = $recurringInvoice->exchange_rate;
         $newInvoice['sales_tax_type'] = $recurringInvoice->sales_tax_type;
         $newInvoice['sales_tax_address_type'] = $recurringInvoice->sales_tax_address_type;
-        $newInvoice['invoice_number'] = $serial->getNextNumber();
-        $newInvoice['sequence_number'] = $serial->nextSequenceNumber;
-        $newInvoice['customer_sequence_number'] = $serial->nextCustomerSequenceNumber;
         $newInvoice['base_due_amount'] = $recurringInvoice->exchange_rate * $recurringInvoice->due_amount;
         $newInvoice['base_discount_val'] = $recurringInvoice->exchange_rate * $recurringInvoice->discount_val;
         $newInvoice['base_sub_total'] = $recurringInvoice->exchange_rate * $recurringInvoice->sub_total;
         $newInvoice['base_tax'] = $recurringInvoice->exchange_rate * $recurringInvoice->tax;
         $newInvoice['base_total'] = $recurringInvoice->exchange_rate * $recurringInvoice->total;
+
+        // Stamped last: the visible number is rendered from a format that may
+        // embed either of the two sequences.
+        $newInvoice += [
+            'invoice_number' => $serial->getNextNumber(),
+            'sequence_number' => $serial->nextSequenceNumber,
+            'customer_sequence_number' => $serial->nextCustomerSequenceNumber,
+        ];
+
         $invoice = Invoice::create($newInvoice);
         $invoice->unique_hash = Hashids::connection(HashidConnection::Invoice->value)->encode($invoice->id);
         $invoice->save();
@@ -200,24 +212,23 @@ class RecurringInvoiceService
         if ($recurringInvoice->fields()->exists()) {
             $customField = [];
 
-            foreach ($recurringInvoice->fields as $data) {
-                $customField[] = [
-                    'id' => $data->custom_field_id,
-                    'value' => $data->defaultAnswer,
-                ];
+            foreach ($recurringInvoice->fields as $answer) {
+                $customField[] = ['id' => $answer->custom_field_id, 'value' => $answer->defaultAnswer];
             }
 
             $this->customFieldValueWriter->attach($invoice, $customField);
         }
 
         if ($recurringInvoice->send_automatically == true) {
+            $customer = $invoice->customer;
+
             $data = [
                 'body' => CompanySetting::getSetting('invoice_mail_body', $recurringInvoice->company_id),
                 'from' => config('mail.from.address'),
                 'to' => $recurringInvoice->customer->email,
                 'subject' => trans('invoices')['new_invoice'],
                 'invoice' => $invoice->toArray(),
-                'customer' => $invoice->customer->toArray(),
+                'customer' => $customer->toArray(),
                 'company' => Company::find($invoice->company_id),
             ];
 
@@ -245,12 +256,14 @@ class RecurringInvoiceService
         }
     }
 
+    /**
+     * Write the template's own tax rows, skipping the ones carrying no amount.
+     */
     private function createTaxes(RecurringInvoice $recurringInvoice, array $taxes): void
     {
         foreach ($taxes as $tax) {
-            $tax['company_id'] = $recurringInvoice->company_id;
-
             if (gettype($tax['amount']) !== 'NULL') {
+                $tax['company_id'] = $recurringInvoice->company_id;
                 $recurringInvoice->taxes()->create($tax);
             }
         }

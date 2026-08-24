@@ -7,13 +7,16 @@ use App\Platform\Operations\Installation\Http\Requests\DomainEnvironmentRequest;
 use Exception;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
+/**
+ * Owns every write the installation wizard makes to the environment file: the
+ * database step, the domain step, and the line-wise editing rules both of them
+ * go through.
+ */
 class EnvironmentManager
 {
-    /**
-     * @var string
-     */
-    private $envPath;
+    private string $envPath;
 
     /**
      * @var string
@@ -21,7 +24,8 @@ class EnvironmentManager
     private $delimiter = "\n";
 
     /**
-     * Set the .env and .env.example paths.
+     * The argument is vestigial: the only file the wizard ever edits is the
+     * one sitting at the application root.
      */
     public function __construct($path = null)
     {
@@ -29,54 +33,51 @@ class EnvironmentManager
     }
 
     /**
-     * Returns the .env contents
-     *
-     * @return false|string
-     */
-    private function getEnvContents()
-    {
-        return file_get_contents($this->envPath);
-    }
-
-    /**
-     * Updates .env file - inspired by Akaunting
+     * Apply a map of variable name => value to the environment file. Names the
+     * file already declares are rewritten where they stand; the rest are
+     * appended. Returns false when there is nothing to write, or no file to
+     * write it into.
      *
      * @return bool
      */
     public function updateEnv(array $data)
     {
-        if (empty($data) || ! is_array($data) || ! is_file($this->envPath)) {
+        if ($data === [] || ! is_file($this->envPath)) {
             return false;
         }
 
-        $env = $this->getEnvContents();
+        $lines = explode($this->delimiter, (string) file_get_contents($this->envPath));
 
-        $env = explode($this->delimiter, $env);
+        foreach ($data as $name => $value) {
+            $lines = $this->applyDeclaration($lines, (string) $name, $value);
+        }
 
-        foreach ($data as $data_key => $data_value) {
-            $updated = false;
+        file_put_contents($this->envPath, implode($this->delimiter, $lines));
 
-            foreach ($env as $env_key => $env_value) {
-                $entry = explode('=', $env_value, 2);
+        return true;
+    }
 
-                // Check if new or old key
-                if ($entry[0] == $data_key) {
-                    $env[$env_key] = sprintf('%s=%s', $data_key, $this->encode($data_value));
-                    $updated = true;
-                }
-            }
+    /**
+     * Rewrite every line declaring $name, or append one when none does. A
+     * line's name is whatever sits in front of its first "=".
+     */
+    private function applyDeclaration(array $lines, string $name, $value): array
+    {
+        $declaration = $name.'='.$this->encode($value);
+        $found = false;
 
-            // Lets create if not available
-            if (! $updated) {
-                $env[] = $data_key.'='.$this->encode($data_value);
+        foreach ($lines as $index => $line) {
+            if (explode('=', $line, 2)[0] === $name) {
+                $lines[$index] = $declaration;
+                $found = true;
             }
         }
 
-        $env = implode($this->delimiter, $env);
+        if (! $found) {
+            $lines[] = $declaration;
+        }
 
-        file_put_contents(base_path('.env'), $env);
-
-        return true;
+        return $lines;
     }
 
     /**
@@ -112,72 +113,72 @@ class EnvironmentManager
     }
 
     /**
-     * Save the database content to the .env file.
+     * The database step. Nothing is written until the submitted credentials
+     * have been proven to open a connection and the target database has been
+     * shown to be free of a previous installation.
      *
      * @return array
      */
     public function saveDatabaseVariables(DatabaseEnvironmentRequest $request)
     {
         $appUrl = $request->get('app_url');
+
         if ($appUrl !== config('app.url')) {
             config(['app.url' => $appUrl]);
         }
-        [$sanctumDomain, $sessionDomain] = $this->getDomains(
-            $request->getHttpHost()
-        );
-        $dbEnv = [
+
+        $driver = $request->get('database_connection');
+
+        // Derived against the URL just adopted above, from the host the wizard
+        // itself is being served on.
+        [$statefulDomains, $sessionDomain] = $this->getDomains($request->getHttpHost());
+
+        $variables = [
             'APP_URL' => $appUrl,
             'APP_LOCALE' => $request->get('app_locale'),
-            'DB_CONNECTION' => $request->get('database_connection'),
+            'DB_CONNECTION' => $driver,
             'SESSION_DOMAIN' => $sessionDomain,
         ];
-        if ($sanctumDomain !== null) {
-            $dbEnv['SANCTUM_STATEFUL_DOMAINS'] = $sanctumDomain;
+
+        if ($statefulDomains !== null) {
+            $variables['SANCTUM_STATEFUL_DOMAINS'] = $statefulDomains;
         }
-        if ($dbEnv['DB_CONNECTION'] != 'sqlite') {
-            if ($request->has('database_username') && $request->has('database_password')) {
-                $dbEnv['DB_HOST'] = $request->get('database_hostname');
-                $dbEnv['DB_PORT'] = $request->get('database_port');
-                $dbEnv['DB_DATABASE'] = $request->get('database_name');
-                $dbEnv['DB_USERNAME'] = $request->get('database_username');
-                $dbEnv['DB_PASSWORD'] = $request->get('database_password');
-            }
-        } else {
-            // Laravel 11 requires SQLite at least v3.35.0
-            // https://laravel.com/docs/11.x/database#introduction
-            if (extension_loaded('sqlite3') && class_exists('\SQLite3') && method_exists('\SQLite3', 'version')) {
-                $version = \SQLite3::version();
-                if (! empty($version['versionString']) && version_compare($version['versionString'], '3.35.0', '<')) {
-                    return [
-                        'error_message' => sprintf('The minimum SQLite version is %s. Your current SQLite version is %s which is not supported. Please upgrade SQLite and retry.', '3.35.0', $version['versionString']),
-                    ];
-                }
-            } else {
+
+        if ($driver === 'sqlite') {
+            $unsupported = $this->sqliteSupportFailure();
+
+            if ($unsupported !== null) {
                 return [
-                    'error_message' => sprintf('SQLite3 is not present. Please install SQLite >=%s and retry.', '3.35.0'),
+                    'error_message' => $unsupported,
                 ];
             }
-            $dbEnv['DB_DATABASE'] = $request->get('database_name');
-            $sqlitePath = $this->resolveSqliteDatabasePath($dbEnv['DB_DATABASE']);
-            // Create empty SQLite database if it doesn't exist. Ensure the
-            // parent directory exists first so user-supplied absolute paths
-            // (e.g. /var/data/foo.sqlite) work even when the directory hasn't
-            // been pre-created.
-            if (! file_exists($sqlitePath)) {
-                $parentDir = dirname($sqlitePath);
-                if (! is_dir($parentDir)) {
-                    mkdir($parentDir, 0755, true);
-                }
-                copy(database_path('stubs/sqlite.empty.db'), $sqlitePath);
-            }
+
+            $variables['DB_DATABASE'] = $request->get('database_name');
+
+            $this->createSqliteDatabase(
+                $this->resolveSqliteDatabasePath($variables['DB_DATABASE'])
+            );
+        } elseif ($request->has('database_username') && $request->has('database_password')) {
+            // Server credentials are only recorded once both halves are on the
+            // request. The password is not a validation requirement, so a
+            // passwordless account submits it as an empty string.
+            $variables['DB_HOST'] = $request->get('database_hostname');
+            $variables['DB_PORT'] = $request->get('database_port');
+            $variables['DB_DATABASE'] = $request->get('database_name');
+            $variables['DB_USERNAME'] = $request->get('database_username');
+            $variables['DB_PASSWORD'] = $request->get('database_password');
         }
 
         try {
-            $this->checkDatabaseConnection($request);
+            $this->openSubmittedConnection($request);
+
             if ($request->get('database_overwrite')) {
                 Artisan::call('db:wipe --force');
             }
-            if (\Schema::hasTable('users')) {
+
+            // Checked before the environment file is touched: refusing here
+            // leaves the instance exactly as it was found.
+            if (Schema::hasTable('users')) {
                 return [
                     'error' => 'database_should_be_empty',
                 ];
@@ -189,7 +190,7 @@ class EnvironmentManager
         }
 
         try {
-            $this->updateEnv($dbEnv);
+            $this->updateEnv($variables);
         } catch (Exception $e) {
             return [
                 'error' => 'database_variables_save_error',
@@ -202,43 +203,83 @@ class EnvironmentManager
     }
 
     /**
-     * Returns PDO object if all ok.
-     *
-     * @return \Closure|\PDO
+     * Laravel's SQLite grammar needs 3.35 or newer. Returns the sentence to
+     * hand back to the wizard, or null when the extension is fit for use.
      */
-    private function checkDatabaseConnection(DatabaseEnvironmentRequest $request)
+    private function sqliteSupportFailure(): ?string
     {
-        $connection = $request->get('database_connection');
+        $minimum = '3.35.0';
 
-        $settings = config("database.connections.$connection");
+        if (! extension_loaded('sqlite3') || ! class_exists('\SQLite3') || ! method_exists('\SQLite3', 'version')) {
+            return sprintf('SQLite3 is not present. Please install SQLite >=%s and retry.', $minimum);
+        }
 
-        $connectionArray = array_merge($settings, [
-            'driver' => $connection,
-            'database' => $connection === 'sqlite'
-                ? $this->resolveSqliteDatabasePath($request->get('database_name'))
-                : $request->get('database_name'),
+        $found = \SQLite3::version()['versionString'] ?? '';
+
+        if ($found !== '' && version_compare($found, $minimum, '<')) {
+            return sprintf('The minimum SQLite version is %s. Your current SQLite version is %s which is not supported. Please upgrade SQLite and retry.', $minimum, $found);
+        }
+
+        return null;
+    }
+
+    /**
+     * A fresh SQLite install points at a file that does not exist yet: lay down
+     * the bundled empty database, digging out the directory the user asked for
+     * on the way, so an absolute path outside the project still works.
+     */
+    private function createSqliteDatabase(string $path): void
+    {
+        if (file_exists($path)) {
+            return;
+        }
+
+        $directory = dirname($path);
+
+        if (! is_dir($directory)) {
+            mkdir($directory, 0755, true);
+        }
+
+        copy(database_path('stubs/sqlite.empty.db'), $path);
+    }
+
+    /**
+     * Narrow the runtime database configuration down to the single connection
+     * described by the form and open it. Bad credentials, an unreachable
+     * server or a missing database all surface as a driver exception.
+     *
+     * @return \PDO
+     */
+    private function openSubmittedConnection(DatabaseEnvironmentRequest $request)
+    {
+        $driver = $request->get('database_connection');
+        $database = $request->get('database_name');
+
+        $settings = array_merge(config("database.connections.{$driver}"), [
+            'driver' => $driver,
+            'database' => $driver === 'sqlite'
+                ? $this->resolveSqliteDatabasePath($database)
+                : $database,
         ]);
 
-        if ($connection !== 'sqlite' && $request->has('database_username') && $request->has('database_password')) {
-            $connectionArray = array_merge($connectionArray, [
-                'username' => $request->get('database_username'),
-                'password' => $request->get('database_password'),
-                'host' => $request->get('database_hostname'),
-                'port' => $request->get('database_port'),
-            ]);
+        if ($driver !== 'sqlite' && $request->has('database_username') && $request->has('database_password')) {
+            $settings['username'] = $request->get('database_username');
+            $settings['password'] = $request->get('database_password');
+            $settings['host'] = $request->get('database_hostname');
+            $settings['port'] = $request->get('database_port');
         }
 
         config([
             'database' => [
                 'migrations' => 'migrations',
-                'default' => $connection,
-                'connections' => [$connection => $connectionArray],
+                'default' => $driver,
+                'connections' => [$driver => $settings],
             ],
         ]);
 
-        DB::purge($connection);
+        DB::purge($driver);
 
-        return DB::connection($connection)->getPdo();
+        return DB::connection($driver)->getPdo();
     }
 
     private function resolveSqliteDatabasePath(?string $databasePath): string
@@ -256,30 +297,40 @@ class EnvironmentManager
         return base_path($databasePath);
     }
 
+    /**
+     * Absolute means a leading separator, or a Windows drive prefix.
+     */
     private function isAbsolutePath(string $path): bool
     {
-        return str_starts_with($path, DIRECTORY_SEPARATOR)
-            || preg_match('/^[A-Za-z]:[\\\\\\/]/', $path) === 1;
+        if (str_starts_with($path, DIRECTORY_SEPARATOR)) {
+            return true;
+        }
+
+        return preg_match('~^[A-Za-z]:[\\\\/]~', $path) === 1;
     }
 
     /**
-     * Save sanctum stateful domain to the .env file.
+     * The domain step: rewrite the session domain, and the stateful-domain
+     * list unless writing it would be a no-op.
      *
      * @return array
      */
     public function saveDomainVariables(DomainEnvironmentRequest $request)
     {
         try {
-            [$sanctumDomain, $sessionDomain] = $this->getDomains(
+            [$statefulDomains, $sessionDomain] = $this->getDomains(
                 $request->get('app_domain')
             );
-            $domainEnv = [
+
+            $variables = [
                 'SESSION_DOMAIN' => $sessionDomain,
             ];
-            if ($sanctumDomain !== null) {
-                $domainEnv['SANCTUM_STATEFUL_DOMAINS'] = $sanctumDomain;
+
+            if ($statefulDomains !== null) {
+                $variables['SANCTUM_STATEFUL_DOMAINS'] = $statefulDomains;
             }
-            $this->updateEnv($domainEnv);
+
+            $this->updateEnv($variables);
         } catch (Exception $e) {
             return [
                 'error' => 'domain_verification_failed',

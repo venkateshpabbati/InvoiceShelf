@@ -8,7 +8,7 @@ use Illuminate\Validation\Rule;
 class DeleteExpensesRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * Gatekeeping happens in the controller, so let every caller through here.
      */
     public function authorize(): bool
     {
@@ -16,18 +16,13 @@ class DeleteExpensesRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * Rules for the bulk expense removal payload.
      */
     public function rules(): array
     {
         return [
-            'ids' => [
-                'required',
-            ],
-            'ids.*' => [
-                'required',
-                Rule::exists('expenses', 'id'),
-            ],
+            'ids' => ['required'],
+            'ids.*' => ['required', Rule::exists('expenses', 'id')],
         ];
     }
 }

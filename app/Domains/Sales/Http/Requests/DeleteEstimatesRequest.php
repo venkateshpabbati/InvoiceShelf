@@ -5,10 +5,15 @@ namespace App\Domains\Sales\Http\Requests;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
+/**
+ * Payload of the bulk estimate removal endpoint: a list of ids, each of which
+ * has to be an estimate. Company scoping is applied by the controller when it
+ * resolves the ids, not here.
+ */
 class DeleteEstimatesRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * The ability is checked in the controller.
      */
     public function authorize(): bool
     {
@@ -16,18 +21,13 @@ class DeleteEstimatesRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * @return array<string, mixed>
      */
     public function rules(): array
     {
         return [
-            'ids' => [
-                'required',
-            ],
-            'ids.*' => [
-                'required',
-                Rule::exists('estimates', 'id'),
-            ],
+            'ids' => 'required',
+            'ids.*' => ['required', Rule::exists('estimates', 'id')],
         ];
     }
 }

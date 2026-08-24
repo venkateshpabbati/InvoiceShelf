@@ -9,6 +9,9 @@ Route::post('customers/{customer}/credit-allocations', [CreditAllocationsControl
 Route::get('/payments/{payment}/send/preview', [PaymentsController::class, 'sendPreview']);
 Route::post('/payments/{payment}/send', [PaymentsController::class, 'send']);
 Route::put('/payments/{payment}/allocations', [PaymentsController::class, 'replaceAllocations']);
-Route::post('/payments/delete', [PaymentsController::class, 'delete']);
-Route::apiResource('payments', PaymentsController::class);
-Route::apiResource('payment-methods', PaymentMethodsController::class);
+Route::post('payments/delete', [PaymentsController::class, 'delete']);
+
+Route::apiResources([
+    'payments' => PaymentsController::class,
+    'payment-methods' => PaymentMethodsController::class,
+]);

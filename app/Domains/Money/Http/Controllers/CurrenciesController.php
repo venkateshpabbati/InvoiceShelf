@@ -8,6 +8,11 @@ use App\Platform\Http\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
+/**
+ * Reference listing of every currency the installation knows about. Currencies
+ * are global data, so nothing here is company scoped; the service decides the
+ * ordering (the widely used codes lead, everything else follows by name).
+ */
 class CurrenciesController extends Controller
 {
     public function __construct(
@@ -16,8 +21,8 @@ class CurrenciesController extends Controller
 
     public function __invoke(Request $request): AnonymousResourceCollection
     {
-        $currencies = $this->currencyService->getAllWithCommonFirst();
-
-        return CurrencyResource::collection($currencies);
+        return CurrencyResource::collection(
+            $this->currencyService->getAllWithCommonFirst(),
+        );
     }
 }

@@ -11,71 +11,93 @@ use App\Domains\Taxation\Http\Resources\TaxResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
+/**
+ * A recurring invoice as the admin API publishes it.
+ *
+ * A recurring invoice is a schedule plus a template of a document, so the
+ * payload opens with the scheduling half -- when it starts, when it fires next,
+ * the cron frequency, how it is limited and whether generated invoices go out
+ * on their own, each key date also rendered in the company's date format -- and
+ * continues with the template half, the same amounts and flags an invoice
+ * carries.
+ *
+ * The related records are each gated behind an existence probe on the relation,
+ * including `invoices`, which publishes the documents this schedule has already
+ * produced through the invoice resource itself.
+ */
 class RecurringInvoiceResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
-     *
      * @param  Request  $request
      */
     public function toArray($request): array
     {
+        $recurring = $this->resource;
+
         return [
-            'id' => $this->id,
-            'starts_at' => $this->starts_at,
-            'formatted_starts_at' => $this->formattedStartsAt,
-            'formatted_created_at' => $this->formattedCreatedAt,
-            'formatted_next_invoice_at' => $this->formattedNextInvoiceAt,
-            'formatted_limit_date' => $this->formattedLimitDate,
-            'send_automatically' => $this->send_automatically,
-            'customer_id' => $this->customer_id,
-            'company_id' => $this->company_id,
-            'creator_id' => $this->creator_id,
-            'status' => $this->status,
-            'next_invoice_at' => $this->next_invoice_at,
-            'frequency' => $this->frequency,
-            'limit_by' => $this->limit_by,
-            'limit_count' => $this->limit_count,
-            'limit_date' => $this->limit_date,
-            'exchange_rate' => $this->exchange_rate,
-            'tax_per_item' => $this->tax_per_item,
-            'tax_included' => $this->tax_included,
-            'discount_per_item' => $this->discount_per_item,
-            'notes' => $this->notes,
-            'discount_type' => $this->discount_type,
-            'discount' => $this->discount,
-            'discount_val' => $this->discount_val,
-            'sub_total' => $this->sub_total,
-            'total' => $this->total,
-            'tax' => $this->tax,
-            'due_amount' => $this->due_amount,
-            'template_name' => $this->template_name,
-            'sales_tax_type' => $this->sales_tax_type,
-            'sales_tax_address_type' => $this->sales_tax_address_type,
-            'fields' => $this->when($this->fields()->exists(), function () {
-                return CustomFieldValueResource::collection($this->fields);
-            }),
-            'items' => $this->when($this->items()->exists(), function () {
-                return InvoiceItemResource::collection($this->items);
-            }),
-            'customer' => $this->when($this->customer()->exists(), function () {
-                return new CustomerResource($this->customer);
-            }),
-            'company' => $this->when($this->company()->exists(), function () {
-                return new CompanyResource($this->company);
-            }),
-            'invoices' => $this->when($this->invoices()->exists(), function () {
-                return InvoiceResource::collection($this->invoices);
-            }),
-            'taxes' => $this->when($this->taxes()->exists(), function () {
-                return TaxResource::collection($this->taxes);
-            }),
-            'creator' => $this->when($this->creator()->exists(), function () {
-                return new UserResource($this->creator);
-            }),
-            'currency' => $this->when($this->currency()->exists(), function () {
-                return new CurrencyResource($this->currency);
-            }),
+            'id' => $recurring->id,
+            'starts_at' => $recurring->starts_at,
+            'formatted_starts_at' => $recurring->formattedStartsAt,
+            'formatted_created_at' => $recurring->formattedCreatedAt,
+            'formatted_next_invoice_at' => $recurring->formattedNextInvoiceAt,
+            'formatted_limit_date' => $recurring->formattedLimitDate,
+            'send_automatically' => $recurring->send_automatically,
+            'customer_id' => $recurring->customer_id,
+            'company_id' => $recurring->company_id,
+            'creator_id' => $recurring->creator_id,
+            'status' => $recurring->status,
+            'next_invoice_at' => $recurring->next_invoice_at,
+            'frequency' => $recurring->frequency,
+            'limit_by' => $recurring->limit_by,
+            'limit_count' => $recurring->limit_count,
+            'limit_date' => $recurring->limit_date,
+            'exchange_rate' => $recurring->exchange_rate,
+            'tax_per_item' => $recurring->tax_per_item,
+            'tax_included' => $recurring->tax_included,
+            'discount_per_item' => $recurring->discount_per_item,
+            'notes' => $recurring->notes,
+            'discount_type' => $recurring->discount_type,
+            'discount' => $recurring->discount,
+            'discount_val' => $recurring->discount_val,
+            'sub_total' => $recurring->sub_total,
+            'total' => $recurring->total,
+            'tax' => $recurring->tax,
+            'due_amount' => $recurring->due_amount,
+            'template_name' => $recurring->template_name,
+            'sales_tax_type' => $recurring->sales_tax_type,
+            'sales_tax_address_type' => $recurring->sales_tax_address_type,
+            'fields' => $this->when(
+                $recurring->fields()->exists(),
+                fn () => CustomFieldValueResource::collection($recurring->fields)
+            ),
+            'items' => $this->when(
+                $recurring->items()->exists(),
+                fn () => InvoiceItemResource::collection($recurring->items)
+            ),
+            'customer' => $this->when(
+                $recurring->customer()->exists(),
+                fn () => new CustomerResource($recurring->customer)
+            ),
+            'company' => $this->when(
+                $recurring->company()->exists(),
+                fn () => new CompanyResource($recurring->company)
+            ),
+            'invoices' => $this->when(
+                $recurring->invoices()->exists(),
+                fn () => InvoiceResource::collection($recurring->invoices)
+            ),
+            'taxes' => $this->when(
+                $recurring->taxes()->exists(),
+                fn () => TaxResource::collection($recurring->taxes)
+            ),
+            'creator' => $this->when(
+                $recurring->creator()->exists(),
+                fn () => new UserResource($recurring->creator)
+            ),
+            'currency' => $this->when(
+                $recurring->currency()->exists(),
+                fn () => new CurrencyResource($recurring->currency)
+            ),
         ];
     }
 }

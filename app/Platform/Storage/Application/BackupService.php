@@ -12,9 +12,7 @@ class BackupService
         private readonly FileDiskService $fileDiskService,
     ) {}
 
-    /**
-     * Resolve the backup FileDisk from the given ID, settings, or default.
-     */
+    /** Resolve the backup FileDisk from the given ID, settings, or default. */
     public function resolveBackupDisk(?int $fileDiskId = null): ?FileDisk
     {
         if ($fileDiskId) {

@@ -18,9 +18,9 @@ use function Pest\Laravel\get;
 use function Pest\Laravel\getJson;
 use function Pest\Laravel\postJson;
 
-beforeEach(function () {
-    Artisan::call('db:seed', ['--class' => 'DatabaseSeeder', '--force' => true]);
-    Artisan::call('db:seed', ['--class' => 'DemoSeeder', '--force' => true]);
+beforeEach(function (): void {
+    Artisan::call('db:seed', ['--force' => true, '--class' => 'DatabaseSeeder']);
+    Artisan::call('db:seed', ['--force' => true, '--class' => 'DemoSeeder']);
 
     $this->user = User::findOrFail(1);
     $this->company = $this->user->companies()->firstOrFail();

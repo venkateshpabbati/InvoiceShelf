@@ -10,169 +10,259 @@ use App\Domains\Money\Http\Resources\CurrencyResource;
 use App\Domains\Taxation\Http\Resources\TaxResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Support\Collection;
 
+/**
+ * An invoice as the admin API publishes it.
+ *
+ * The stored columns come first, then the derived reading aids: dates rendered
+ * in the company's date format, the shareable PDF link, whether the document is
+ * still editable and whether the payment module is switched on.
+ *
+ * Two different gating strategies live side by side here, and the difference is
+ * intentional.
+ *
+ * The crediting and settlement blocks -- `credit_notes`, `credited_total`,
+ * `credited_status`, `credited_quantities` and `payment_allocations` -- are
+ * published only when the caller already eager-loaded the relation they read.
+ * Probing those per row would cost extra queries on every line of a paginated
+ * listing, so an index response simply omits them and the detail response,
+ * which loads `creditNotes.items` and `allocations.payment`, carries them.
+ *
+ * The trailing associations -- lines, contact, author, taxes, custom field
+ * values, company, currency -- instead probe the relation with an existence
+ * query each time, so they are correct whether or not anything was eager
+ * loaded. That is a query per association per row; it is the established shape
+ * of this payload and is preserved deliberately.
+ */
 class InvoiceResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
-     *
      * @param  Request  $request
      */
     public function toArray($request): array
     {
+        $invoice = $this->resource;
+        $creditNotesLoaded = $invoice->relationLoaded('creditNotes');
+
         return [
-            'id' => $this->id,
-            'invoice_date' => $this->invoice_date,
-            'due_date' => $this->due_date,
-            'invoice_number' => $this->invoice_number,
-            'reference_number' => $this->reference_number,
-            'type' => $this->type,
-            'related_invoice_id' => $this->related_invoice_id,
-            'status' => $this->status,
-            'paid_status' => $this->paid_status,
-            'tax_per_item' => $this->tax_per_item,
-            'tax_included' => $this->tax_included,
-            'discount_per_item' => $this->discount_per_item,
-            'notes' => $this->notes,
-            'discount_type' => $this->discount_type,
-            'discount' => $this->discount,
-            'discount_val' => $this->discount_val,
-            'sub_total' => $this->sub_total,
-            'total' => $this->total,
-            'tax' => $this->tax,
-            'due_amount' => $this->due_amount,
-            'sent' => $this->sent,
-            'viewed' => $this->viewed,
-            'unique_hash' => $this->unique_hash,
-            'template_name' => $this->template_name,
-            'customer_id' => $this->customer_id,
-            'recurring_invoice_id' => $this->recurring_invoice_id,
-            'sequence_number' => $this->sequence_number,
-            'exchange_rate' => $this->exchange_rate,
-            'base_discount_val' => $this->base_discount_val,
-            'base_sub_total' => $this->base_sub_total,
-            'base_total' => $this->base_total,
-            'creator_id' => $this->creator_id,
-            'base_tax' => $this->base_tax,
-            'base_due_amount' => $this->base_due_amount,
-            'currency_id' => $this->currency_id,
-            'formatted_created_at' => $this->formattedCreatedAt,
-            'invoice_pdf_url' => $this->invoicePdfUrl,
-            'formatted_invoice_date' => $this->formattedInvoiceDate,
-            'formatted_due_date' => $this->formattedDueDate,
-            'allow_edit' => $this->allow_edit,
-            'payment_module_enabled' => $this->payment_module_enabled,
-            'sales_tax_type' => $this->sales_tax_type,
-            'sales_tax_address_type' => $this->sales_tax_address_type,
-            'overdue' => $this->overdue,
-            // Credit notes reversing this invoice (minimal reference so the
-            // UI can flag the invoice as cancelled and link to the storno
-            // document, mirroring the related_invoice back-link). Emitted only
-            // where the relation was eager-loaded: probing it per row costs two
-            // queries each, and this resource is serialized in paginated lists.
+            'id' => $invoice->id,
+            'invoice_date' => $invoice->invoice_date,
+            'due_date' => $invoice->due_date,
+            'invoice_number' => $invoice->invoice_number,
+            'reference_number' => $invoice->reference_number,
+            'type' => $invoice->type,
+            'related_invoice_id' => $invoice->related_invoice_id,
+            'status' => $invoice->status,
+            'paid_status' => $invoice->paid_status,
+            'tax_per_item' => $invoice->tax_per_item,
+            'tax_included' => $invoice->tax_included,
+            'discount_per_item' => $invoice->discount_per_item,
+            'notes' => $invoice->notes,
+            'discount_type' => $invoice->discount_type,
+            'discount' => $invoice->discount,
+            'discount_val' => $invoice->discount_val,
+            'sub_total' => $invoice->sub_total,
+            'total' => $invoice->total,
+            'tax' => $invoice->tax,
+            'due_amount' => $invoice->due_amount,
+            'sent' => $invoice->sent,
+            'viewed' => $invoice->viewed,
+            'unique_hash' => $invoice->unique_hash,
+            'template_name' => $invoice->template_name,
+            'customer_id' => $invoice->customer_id,
+            'recurring_invoice_id' => $invoice->recurring_invoice_id,
+            'sequence_number' => $invoice->sequence_number,
+            'exchange_rate' => $invoice->exchange_rate,
+            'base_discount_val' => $invoice->base_discount_val,
+            'base_sub_total' => $invoice->base_sub_total,
+            'base_total' => $invoice->base_total,
+            'creator_id' => $invoice->creator_id,
+            'base_tax' => $invoice->base_tax,
+            'base_due_amount' => $invoice->base_due_amount,
+            'currency_id' => $invoice->currency_id,
+            'formatted_created_at' => $invoice->formattedCreatedAt,
+            'invoice_pdf_url' => $invoice->invoicePdfUrl,
+            'formatted_invoice_date' => $invoice->formattedInvoiceDate,
+            'formatted_due_date' => $invoice->formattedDueDate,
+            'allow_edit' => $invoice->allow_edit,
+            'payment_module_enabled' => $invoice->payment_module_enabled,
+            'sales_tax_type' => $invoice->sales_tax_type,
+            'sales_tax_address_type' => $invoice->sales_tax_address_type,
+            'overdue' => $invoice->overdue,
+
+            // Just enough of each reversing document for the UI to flag the
+            // invoice as cancelled and link through to the storno. Suppressed
+            // when there are none, so the key's presence is itself the signal.
             'credit_notes' => $this->when(
-                $this->relationLoaded('creditNotes') && $this->creditNotes->isNotEmpty(),
-                fn () => $this->creditNotes->map(fn ($creditNote) => [
-                    'id' => $creditNote->id,
-                    'invoice_number' => $creditNote->invoice_number,
-                ])->values()
+                $creditNotesLoaded && $invoice->creditNotes->isNotEmpty(),
+                fn () => $this->creditNoteReferences()
             ),
-            // Why this invoice was credited, if it was. Set only by the
-            // credit-note flow, never by the invoice form.
-            'credit_reason' => $this->credit_reason,
-            // How much of the invoice has been credited off it, as a positive
-            // number of cents (credit notes store negative totals), and whether
-            // that covers the whole document. Both are read off the same loaded
-            // relation the banner uses, so they cost no extra query.
+
+            // Written by the crediting flow only; the invoice form never sets it.
+            'credit_reason' => $invoice->credit_reason,
+
+            // How much has been credited off this invoice and whether that
+            // covers the document in full. Both read the same already-loaded
+            // relation the banner above uses, so neither costs a query.
             'credited_total' => $this->when(
-                $this->relationLoaded('creditNotes'),
+                $creditNotesLoaded,
                 fn () => $this->creditedTotal()
             ),
             'credited_status' => $this->when(
-                $this->relationLoaded('creditNotes'),
-                function () {
-                    $credited = $this->creditedTotal();
-
-                    if ($credited === 0) {
-                        return 'NONE';
-                    }
-
-                    return $credited === (int) $this->total ? 'FULL' : 'PARTIAL';
-                }
+                $creditNotesLoaded,
+                fn () => $this->creditedStatus()
             ),
-            // Credited quantity per ORIGINAL line, which is what a partial
-            // credit form needs to offer the remaining quantities. Emitted only
-            // when the credit notes' items came along.
+
+            // Credited quantity per line of THIS invoice, which is what a
+            // partial-credit form needs in order to offer what is left. Needs
+            // the reversing documents' own lines, so it waits for those too.
             'credited_quantities' => $this->when(
-                $this->relationLoaded('creditNotes')
-                    && $this->creditNotes->every(fn ($creditNote) => $creditNote->relationLoaded('items')),
-                function () {
-                    $quantities = [];
-
-                    foreach ($this->creditNotes as $creditNote) {
-                        foreach ($creditNote->items as $item) {
-                            if (! $item->source_invoice_item_id) {
-                                continue;
-                            }
-
-                            $quantities[$item->source_invoice_item_id] =
-                                ($quantities[$item->source_invoice_item_id] ?? 0) + (float) $item->quantity;
-                        }
-                    }
-
-                    // Cast to an object because the item ids are the keys: a
-                    // nested array whose keys are all numeric is re-indexed to a
-                    // list by the resource filter, which would throw the ids away.
-                    return (object) $quantities;
-                }
+                $creditNotesLoaded
+                    && $invoice->creditNotes->every(fn ($note) => $note->relationLoaded('items')),
+                fn () => $this->creditedQuantities()
             ),
-            // Allocation rows explain how this invoice was settled without
-            // reintroducing the removed singular payment.invoice relation.
-            // They are loaded for the detail response only, so index listings
-            // remain free of per-row payment queries.
+
+            // Settlement is reported through the allocation rows rather than a
+            // payment relation on the invoice itself. Loaded for the detail
+            // response only, so listings stay free of per-row payment queries.
             'payment_allocations' => $this->when(
-                $this->relationLoaded('allocations'),
-                fn () => $this->allocations->map(fn ($allocation) => [
-                    'id' => $allocation->id,
-                    'payment_id' => $allocation->payment_id,
-                    'amount' => $allocation->amount,
-                    'base_amount' => $allocation->base_amount,
-                    'payment' => $allocation->relationLoaded('payment') && $allocation->payment ? [
-                        'id' => $allocation->payment->id,
-                        'payment_number' => $allocation->payment->payment_number,
-                        'formatted_payment_date' => $allocation->payment->formattedPaymentDate,
-                    ] : null,
-                ])->values()
+                $invoice->relationLoaded('allocations'),
+                fn () => $this->allocationSummaries()
             ),
-            'items' => $this->when($this->items()->exists(), function () {
-                return InvoiceItemResource::collection($this->items);
-            }),
-            'customer' => $this->when($this->customer()->exists(), function () {
-                return new CustomerResource($this->customer);
-            }),
-            'creator' => $this->when($this->creator()->exists(), function () {
-                return new UserResource($this->creator);
-            }),
-            'taxes' => $this->when($this->taxes()->exists(), function () {
-                return TaxResource::collection($this->taxes);
-            }),
-            'fields' => $this->when($this->fields()->exists(), function () {
-                return CustomFieldValueResource::collection($this->fields);
-            }),
-            'company' => $this->when($this->company()->exists(), function () {
-                return new CompanyResource($this->company);
-            }),
-            'currency' => $this->when($this->currency()->exists(), function () {
-                return new CurrencyResource($this->currency);
-            }),
+
+            'items' => $this->when(
+                $invoice->items()->exists(),
+                fn () => InvoiceItemResource::collection($invoice->items)
+            ),
+            'customer' => $this->when(
+                $invoice->customer()->exists(),
+                fn () => new CustomerResource($invoice->customer)
+            ),
+            'creator' => $this->when(
+                $invoice->creator()->exists(),
+                fn () => new UserResource($invoice->creator)
+            ),
+            'taxes' => $this->when(
+                $invoice->taxes()->exists(),
+                fn () => TaxResource::collection($invoice->taxes)
+            ),
+            'fields' => $this->when(
+                $invoice->fields()->exists(),
+                fn () => CustomFieldValueResource::collection($invoice->fields)
+            ),
+            'company' => $this->when(
+                $invoice->company()->exists(),
+                fn () => new CompanyResource($invoice->company)
+            ),
+            'currency' => $this->when(
+                $invoice->currency()->exists(),
+                fn () => new CurrencyResource($invoice->currency)
+            ),
         ];
     }
 
     /**
-     * Sum of the loaded credit notes as a positive number of cents.
+     * Everything credited off this invoice, in cents, as a positive number.
+     *
+     * Credit notes store their amounts negated, so the loaded relation's sum is
+     * flipped back on the way out.
      */
     protected function creditedTotal(): int
     {
         return -(int) $this->creditNotes->sum('total');
+    }
+
+    /**
+     * Identifier and number of each document reversing this invoice.
+     *
+     * Reindexed, because the loaded relation's keys are positions in the parent
+     * result set and would otherwise be published as object keys.
+     */
+    private function creditNoteReferences(): Collection
+    {
+        return $this->creditNotes
+            ->map(fn ($note) => [
+                'id' => $note->id,
+                'invoice_number' => $note->invoice_number,
+            ])
+            ->values();
+    }
+
+    /**
+     * How far the crediting has gone: none of it, all of it, or part of it.
+     */
+    private function creditedStatus(): string
+    {
+        $credited = $this->creditedTotal();
+
+        return match (true) {
+            $credited === 0 => 'NONE',
+            $credited === (int) $this->total => 'FULL',
+            default => 'PARTIAL',
+        };
+    }
+
+    /**
+     * Credited quantity per line of this invoice, keyed by the line's id.
+     *
+     * Reversing lines that do not point back at an original line contribute
+     * nothing. The result is handed over as an object rather than an array: the
+     * keys are line ids, and an all-numeric nested array would be reindexed
+     * into a list by the resource filter, throwing those ids away.
+     */
+    private function creditedQuantities(): object
+    {
+        $quantities = [];
+
+        foreach ($this->creditNotes as $note) {
+            foreach ($note->items as $line) {
+                $source = $line->source_invoice_item_id;
+
+                if (! $source) {
+                    continue;
+                }
+
+                $quantities[$source] = ($quantities[$source] ?? 0) + (float) $line->quantity;
+            }
+        }
+
+        return (object) $quantities;
+    }
+
+    /**
+     * One row per payment allocated against this invoice.
+     *
+     * The paying document is nested only when it came along with the
+     * allocation; otherwise the row still reports the allocated amounts and
+     * leaves the payment null rather than fetching it.
+     */
+    private function allocationSummaries(): Collection
+    {
+        return $this->allocations
+            ->map(fn ($allocation) => [
+                'id' => $allocation->id,
+                'payment_id' => $allocation->payment_id,
+                'amount' => $allocation->amount,
+                'base_amount' => $allocation->base_amount,
+                'payment' => $this->allocatedPayment($allocation),
+            ])
+            ->values();
+    }
+
+    /**
+     * The paying document behind one allocation, when it is already loaded.
+     */
+    private function allocatedPayment($allocation): ?array
+    {
+        if (! $allocation->relationLoaded('payment') || ! $allocation->payment) {
+            return null;
+        }
+
+        return [
+            'id' => $allocation->payment->id,
+            'payment_number' => $allocation->payment->payment_number,
+            'formatted_payment_date' => $allocation->payment->formattedPaymentDate,
+        ];
     }
 }

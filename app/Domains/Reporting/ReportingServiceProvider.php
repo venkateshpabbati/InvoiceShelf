@@ -11,7 +11,13 @@ class ReportingServiceProvider extends ServiceProvider
 {
     public function boot(): void
     {
-        Gate::define('view dashboard', [DashboardPolicy::class, 'view']);
-        Gate::define('view report', [ReportPolicy::class, 'viewReport']);
+        $reportingAbilities = [
+            'view dashboard' => [DashboardPolicy::class, 'view'],
+            'view report' => [ReportPolicy::class, 'viewReport'],
+        ];
+
+        foreach ($reportingAbilities as $ability => $handler) {
+            Gate::define($ability, $handler);
+        }
     }
 }

@@ -5,11 +5,13 @@ namespace App\Domains\Money\Http\Resources\CustomerPortal;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
+/**
+ * The customer-portal view of a currency. Currencies hold nothing private, so
+ * the portal serves the same fields the admin API does.
+ */
 class CurrencyResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
-     *
      * @param  Request  $request
      */
     public function toArray($request): array

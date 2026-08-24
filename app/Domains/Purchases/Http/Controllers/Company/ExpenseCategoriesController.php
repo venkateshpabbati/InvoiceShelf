@@ -7,34 +7,28 @@ use App\Domains\Purchases\Http\Resources\ExpenseCategoryResource;
 use App\Domains\Purchases\Models\ExpenseCategory;
 use App\Platform\Http\Controller;
 use Illuminate\Http\Request;
-use Illuminate\Http\Response;
 
 class ExpenseCategoriesController extends Controller
 {
     /**
-     * Display a listing of the resource.
-     *
-     * @return Response
+     * Newest-first, searchable list of the company's categories.
      */
     public function index(Request $request)
     {
         $this->authorize('viewAny', ExpenseCategory::class);
 
-        $limit = $request->has('limit') ? $request->limit : 5;
+        $filters = $request->all();
 
-        $categories = ExpenseCategory::applyFilters($request->all())
+        $categories = ExpenseCategory::applyFilters($filters)
             ->whereCompany()
             ->latest()
-            ->paginateData($limit);
+            ->paginateData($request->input('limit', 5));
 
         return ExpenseCategoryResource::collection($categories);
     }
 
     /**
-     * Store a newly created resource in storage.
-     *
-     * @param  Request  $request
-     * @return Response
+     * Add a category to the active company.
      */
     public function store(ExpenseCategoryRequest $request)
     {
@@ -46,9 +40,7 @@ class ExpenseCategoriesController extends Controller
     }
 
     /**
-     * Display the specified resource.
-     *
-     * @return Response
+     * Return one category.
      */
     public function show(ExpenseCategory $category)
     {
@@ -58,11 +50,7 @@ class ExpenseCategoriesController extends Controller
     }
 
     /**
-     * Update the specified resource in storage.
-     *
-     * @param  Request  $request
-     * @param  ExpenseCategory  $ExpenseCategory
-     * @return Response
+     * Save the submitted changes on a category.
      */
     public function update(ExpenseCategoryRequest $request, ExpenseCategory $category)
     {
@@ -74,22 +62,20 @@ class ExpenseCategoriesController extends Controller
     }
 
     /**
-     * Remove the specified resource from storage.
-     *
-     * @return Response
+     * Drop a category, unless expenses still point at it.
      */
     public function destroy(ExpenseCategory $category)
     {
         $this->authorize('delete', $category);
 
-        if ($category->expenses() && $category->expenses()->count() > 0) {
+        $usage = $category->expenses();
+
+        if ($usage && $usage->count() > 0) {
             return respondJson('expense_attached', 'Expense Attached');
         }
 
         $category->delete();
 
-        return response()->json([
-            'success' => true,
-        ]);
+        return response()->json(['success' => true]);
     }
 }

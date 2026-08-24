@@ -7,7 +7,7 @@ use Illuminate\Foundation\Http\FormRequest;
 class ExpenseCategoryRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * Gatekeeping happens in the controller, so let every caller through here.
      */
     public function authorize(): bool
     {
@@ -15,26 +15,20 @@ class ExpenseCategoryRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * Rules for creating or editing an expense category.
      */
     public function rules(): array
     {
         return [
-            'name' => [
-                'required',
-            ],
-            'description' => [
-                'nullable',
-            ],
+            'name' => ['required'],
+            'description' => ['nullable'],
         ];
     }
 
     public function getExpenseCategoryPayload()
     {
-        return collect($this->validated())
-            ->merge([
-                'company_id' => $this->header('company'),
-            ])
-            ->toArray();
+        return array_merge($this->validated(), [
+            'company_id' => $this->header('company'),
+        ]);
     }
 }

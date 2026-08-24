@@ -6,11 +6,13 @@ use App\Domains\Accounts\Http\Resources\CustomerPortal\UserResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
+/**
+ * A postal address as the customer portal publishes it: the stored columns,
+ * plus the country and the owning user when either of them is on file.
+ */
 class AddressResource extends JsonResource
 {
     /**
-     * Transform the resource into an array.
-     *
      * @param  Request  $request
      */
     public function toArray($request): array
@@ -30,12 +32,14 @@ class AddressResource extends JsonResource
             'user_id' => $this->user_id,
             'company_id' => $this->company_id,
             'customer_id' => $this->customer_id,
-            'country' => $this->when($this->country()->exists(), function () {
-                return new CountryResource($this->country);
-            }),
-            'user' => $this->when($this->user()->exists(), function () {
-                return new UserResource($this->user);
-            }),
+            'country' => $this->when(
+                $this->country()->exists(),
+                fn () => new CountryResource($this->country)
+            ),
+            'user' => $this->when(
+                $this->user()->exists(),
+                fn () => new UserResource($this->user)
+            ),
         ];
     }
 }

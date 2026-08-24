@@ -6,17 +6,32 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
 use Illuminate\Queue\SerializesModels;
 
+/**
+ * Throwaway probe an administrator sends at the freshly configured transport
+ * to confirm that mail actually leaves the installation.
+ */
 class TestMail extends Mailable
 {
     use Queueable;
     use SerializesModels;
 
+    /**
+     * Subject line supplied by the administrator.
+     *
+     * @var mixed
+     */
     public $subject;
 
+    /**
+     * Body supplied by the administrator, dropped into the markdown template.
+     *
+     * @var mixed
+     */
     public $message;
 
     /**
-     * Create a new message instance.
+     * @param  mixed  $subject
+     * @param  mixed  $message
      */
     public function __construct($subject, $message)
     {
@@ -25,14 +40,12 @@ class TestMail extends Mailable
     }
 
     /**
-     * Build the message.
-     *
      * @return $this
      */
     public function build()
     {
-        return $this->subject($this->subject)->markdown('emails.test')->with([
-            'my_message' => $this->message,
-        ]);
+        return $this->subject($this->subject)
+            ->markdown('emails.test')
+            ->with(['my_message' => $this->message]);
     }
 }

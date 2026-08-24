@@ -6,230 +6,176 @@ use Illuminate\Support\Str;
 use PDO;
 use SQLite3;
 
+/**
+ * Probes the runtime for the pieces the installer refuses to continue without:
+ * PHP extensions, web server modules and the version of whichever database
+ * engine the operator picked on the wizard's database step.
+ */
 class RequirementsChecker
 {
     /**
-     * Minimum PHP Version Supported (Override is in installer.php config file).
-     *
-     * @var _minPhpVersion
+     * Floor used only when a caller supplies none of its own. The real floor
+     * ships in config/installer.php.
      */
-    private $_minPhpVersion = '7.0.0';
+    private const FALLBACK_MIN_PHP_VERSION = '7.0.0';
 
     /**
-     * Check for the server requirements.
-     *
-     * @return array
+     * Evaluate a grouped requirement list. Only the "php" and "apache" groups
+     * carry meaning; anything else is dropped, as is a group that produced no
+     * verdicts at all. The top level "errors" flag appears only once something
+     * has actually failed.
      */
-    public function check(array $requirements)
+    public function check(array $requirements): array
     {
-        $results = [];
+        $report = [];
+        $missing = false;
 
-        foreach ($requirements as $type => $requirement) {
-            switch ($type) {
-                // check php requirements
-                case 'php':
-                    foreach ($requirements[$type] as $requirement) {
-                        $results['requirements'][$type][$requirement] = true;
+        foreach ($requirements as $group => $names) {
+            $verdicts = match ($group) {
+                'php' => $this->probeExtensions($names),
+                'apache' => $this->probeApacheModules($names),
+                default => [],
+            };
 
-                        if (! extension_loaded($requirement)) {
-                            $results['requirements'][$type][$requirement] = false;
+            if ($verdicts === []) {
+                continue;
+            }
 
-                            $results['errors'] = true;
-                        }
-                    }
+            $report['requirements'][$group] = $verdicts;
 
-                    break;
-                    // check apache requirements
-                case 'apache':
-                    foreach ($requirements[$type] as $requirement) {
-                        // if function doesn't exist we can't check apache modules
-                        if (function_exists('apache_get_modules')) {
-                            $results['requirements'][$type][$requirement] = true;
-
-                            if (! in_array($requirement, apache_get_modules())) {
-                                $results['requirements'][$type][$requirement] = false;
-
-                                $results['errors'] = true;
-                            }
-                        }
-                    }
-
-                    break;
+            if (in_array(false, $verdicts, true)) {
+                $missing = true;
             }
         }
 
-        return $results;
+        if ($missing) {
+            $report['errors'] = true;
+        }
+
+        return $report;
     }
 
     /**
-     * Check PHP version requirement.
-     *
-     * @return array
+     * Compare the running interpreter against a floor, reporting both the raw
+     * version string and its leading numeric part.
      */
-    public function checkPHPVersion(?string $minPhpVersion = null)
+    public function checkPHPVersion(?string $minPhpVersion = null): array
     {
-        $minVersionPhp = $minPhpVersion;
-        $currentPhpVersion = $this->getPhpVersionInfo();
-        $supported = false;
+        $floor = ($minPhpVersion !== null && $minPhpVersion !== '')
+            ? $minPhpVersion
+            : $this->getMinPhpVersion();
 
-        if ($minPhpVersion == null) {
-            $minVersionPhp = $this->getMinPhpVersion();
-        }
-
-        if (version_compare($currentPhpVersion['version'], $minVersionPhp) >= 0) {
-            $supported = true;
-        }
-
-        $phpStatus = [
-            'full' => $currentPhpVersion['full'],
-            'current' => $currentPhpVersion['version'],
-            'minimum' => $minVersionPhp,
-            'supported' => $supported,
-        ];
-
-        return $phpStatus;
-    }
-
-    /**
-     * Get current Php version information.
-     *
-     * @return array
-     */
-    private static function getPhpVersionInfo()
-    {
-        $currentVersionFull = PHP_VERSION;
-        preg_match("#^\d+(\.\d+)*#", $currentVersionFull, $filtered);
-        $currentVersion = $filtered[0];
+        $running = $this->numericPhpVersion();
 
         return [
-            'full' => $currentVersionFull,
-            'version' => $currentVersion,
+            'full' => PHP_VERSION,
+            'current' => $running,
+            'minimum' => $floor,
+            'supported' => version_compare($running, $floor) >= 0,
         ];
     }
 
     /**
-     * Get minimum PHP version ID.
-     *
-     * @return string _minPhpVersion
+     * Compare a live MySQL/MariaDB connection against the floor configured for
+     * whichever of the two the server banner reports.
      */
-    protected function getMinPhpVersion()
+    public function checkMysqlVersion($conn): array
     {
-        return $this->_minPhpVersion;
+        $banner = $conn->getAttribute(PDO::ATTR_SERVER_VERSION);
+
+        $floor = Str::contains($banner, 'MariaDB')
+            ? config('invoiceshelf.min_mariadb_version')
+            : config('invoiceshelf.min_mysql_version');
+
+        return $this->versionVerdict($this->queryMysqlVersion($conn), $floor);
     }
 
     /**
-     * Check PHP version requirement.
-     *
-     * @return array
+     * Compare the bundled SQLite library against a floor.
      */
-    public function checkMysqlVersion($conn)
+    public function checkSqliteVersion(?string $minSqliteVersion = null): array
     {
-        $version_info = $conn->getAttribute(PDO::ATTR_SERVER_VERSION);
+        return $this->versionVerdict(SQLite3::version()['versionString'], $minSqliteVersion);
+    }
 
-        $isMariaDb = Str::contains($version_info, 'MariaDB');
+    /**
+     * Compare a live PostgreSQL connection against a floor.
+     */
+    public function checkPgsqlVersion($conn, ?string $minPgsqlVersion = null): array
+    {
+        return $this->versionVerdict(pg_version($conn)['server'], $minPgsqlVersion);
+    }
 
-        $minVersionMysql = $isMariaDb ? config('invoiceshelf.min_mariadb_version') : config('invoiceshelf.min_mysql_version');
+    /**
+     * Default PHP floor for callers that pass none.
+     */
+    protected function getMinPhpVersion(): string
+    {
+        return self::FALLBACK_MIN_PHP_VERSION;
+    }
 
-        $currentMysqlVersion = $this->getMysqlVersionInfo($conn);
+    /**
+     * @return array<string, bool>
+     */
+    private function probeExtensions(array $extensions): array
+    {
+        $verdicts = [];
 
-        $supported = false;
-
-        if (version_compare($currentMysqlVersion, $minVersionMysql) >= 0) {
-            $supported = true;
+        foreach ($extensions as $extension) {
+            $verdicts[$extension] = extension_loaded($extension);
         }
 
-        $phpStatus = [
-            'current' => $currentMysqlVersion,
-            'minimum' => $minVersionMysql,
-            'supported' => $supported,
-        ];
-
-        return $phpStatus;
+        return $verdicts;
     }
 
     /**
-     * Get current Mysql version information.
+     * Module introspection is only available under mod_php; without it there
+     * is nothing to report, so the group is skipped rather than failed.
      *
-     * @return string
+     * @return array<string, bool>
      */
-    private static function getMysqlVersionInfo($pdo)
+    private function probeApacheModules(array $modules): array
     {
-        $version = $pdo->query('select version()')->fetchColumn();
-
-        preg_match("/^[0-9\.]+/", $version, $match);
-
-        return $match[0];
-    }
-
-    /**
-     * Check Sqlite version requirement.
-     *
-     * @return array
-     */
-    public function checkSqliteVersion(?string $minSqliteVersion = null)
-    {
-        $minVersionSqlite = $minSqliteVersion;
-        $currentSqliteVersion = $this->getSqliteVersionInfo();
-        $supported = false;
-
-        if (version_compare($currentSqliteVersion, $minVersionSqlite) >= 0) {
-            $supported = true;
+        if (! function_exists('apache_get_modules')) {
+            return [];
         }
 
-        $phpStatus = [
-            'current' => $currentSqliteVersion,
-            'minimum' => $minVersionSqlite,
-            'supported' => $supported,
-        ];
+        $enabled = apache_get_modules();
+        $verdicts = [];
 
-        return $phpStatus;
-    }
-
-    /**
-     * Get current Sqlite version information.
-     *
-     * @return string
-     */
-    private static function getSqliteVersionInfo()
-    {
-        $currentVersion = SQLite3::version();
-
-        return $currentVersion['versionString'];
-    }
-
-    /**
-     * Check Pgsql version requirement.
-     *
-     * @return array
-     */
-    public function checkPgsqlVersion($conn, ?string $minPgsqlVersion = null)
-    {
-        $minVersionPgsql = $minPgsqlVersion;
-        $currentPgsqlVersion = $this->getPgsqlVersionInfo($conn);
-        $supported = false;
-
-        if (version_compare($currentPgsqlVersion, $minVersionPgsql) >= 0) {
-            $supported = true;
+        foreach ($modules as $module) {
+            $verdicts[$module] = in_array($module, $enabled);
         }
 
-        $phpStatus = [
-            'current' => $currentPgsqlVersion,
-            'minimum' => $minVersionPgsql,
-            'supported' => $supported,
-        ];
-
-        return $phpStatus;
+        return $verdicts;
     }
 
     /**
-     * Get current Pgsql version information.
-     *
-     * @return string
+     * The shared shape of every database version report.
      */
-    private static function getPgsqlVersionInfo($conn)
+    private function versionVerdict(?string $current, ?string $minimum): array
     {
-        $currentVersion = pg_version($conn);
+        return [
+            'current' => $current,
+            'minimum' => $minimum,
+            'supported' => version_compare($current, $minimum) >= 0,
+        ];
+    }
 
-        return $currentVersion['server'];
+    /**
+     * PHP_VERSION with any suffix such as "-1+ubuntu" trimmed away.
+     */
+    private function numericPhpVersion(): string
+    {
+        preg_match("#^\d+(\.\d+)*#", PHP_VERSION, $leading);
+
+        return $leading[0];
+    }
+
+    private function queryMysqlVersion($pdo): string
+    {
+        preg_match("/^[0-9\.]+/", $pdo->query('select version()')->fetchColumn(), $leading);
+
+        return $leading[0];
     }
 }

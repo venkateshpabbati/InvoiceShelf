@@ -30,8 +30,12 @@ class InvoiceBalanceService
         $invoice->base_due_amount = (int) round($due * $invoice->exchange_rate);
 
         if ($due === 0) {
-            $invoice->status = Invoice::STATUS_COMPLETED;
-            $invoice->paid_status = Invoice::STATUS_PAID;
+            // Nothing left outstanding, so the document closes out on both
+            // axes at once.
+            $invoice->forceFill([
+                'status' => Invoice::STATUS_COMPLETED,
+                'paid_status' => Invoice::STATUS_PAID,
+            ]);
             $invoice->overdue = false;
         } else {
             $invoice->status = $invoice->getPreviousStatus();

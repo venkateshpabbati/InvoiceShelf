@@ -5,25 +5,29 @@ namespace App\Platform\Modules\Runtime;
 use App\Platform\Modules\Events\ModuleEnabledEvent;
 use App\Platform\Modules\Events\ModuleInstalledEvent;
 use App\Platform\Modules\Models\Module as ModelsModule;
-use Artisan;
+use Illuminate\Support\Facades\Artisan;
 use Nwidart\Modules\Facades\Module;
 
 class ModuleInstaller
 {
+    /**
+     * Migrate and activate a module already present on disk, write its registry
+     * row, then announce the install and the activation.
+     */
     public static function complete($module, $version): bool
     {
         Module::register();
 
-        Artisan::call("module:migrate $module --force");
-        Artisan::call("module:enable $module");
+        Artisan::call(sprintf('module:migrate %s --force', $module));
+        Artisan::call(sprintf('module:enable %s', $module));
 
-        $module = ModelsModule::updateOrCreate(
+        $record = ModelsModule::updateOrCreate(
             ['name' => $module],
             ['version' => $version, 'installed' => true, 'enabled' => true]
         );
 
-        ModuleInstalledEvent::dispatch($module);
-        ModuleEnabledEvent::dispatch($module);
+        event(new ModuleInstalledEvent($record));
+        event(new ModuleEnabledEvent($record));
 
         return true;
     }

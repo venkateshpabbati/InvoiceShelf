@@ -6,36 +6,41 @@ use App\Domains\Receivables\Http\Requests\PaymentMethodRequest;
 use App\Domains\Receivables\Http\Resources\PaymentMethodResource;
 use App\Domains\Receivables\Models\PaymentMethod;
 use App\Platform\Http\Controller;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Http\Response;
 
+/**
+ * The manual payment methods of a company: the labels an admin maintains by
+ * hand. Methods registered by gateway modules live in the same table but are
+ * owned by the module platform and never surface here.
+ */
 class PaymentMethodsController extends Controller
 {
     /**
-     * Display a listing of the resource.
+     * Paginated methods of the active company, newest first.
      *
-     * @return Response
+     * @return JsonResponse
      */
     public function index(Request $request)
     {
         $this->authorize('viewAny', PaymentMethod::class);
 
-        $limit = $request->has('limit') ? $request->limit : 5;
-
+        // Filters come first: the method_id filter widens the query with an OR,
+        // so the type and company conditions have to close over it.
         $paymentMethods = PaymentMethod::applyFilters($request->all())
             ->where('type', PaymentMethod::TYPE_GENERAL)
             ->whereCompany()
             ->latest()
-            ->paginateData($limit);
+            ->paginateData($request->input('limit', 5));
 
         return PaymentMethodResource::collection($paymentMethods);
     }
 
     /**
-     * Store a newly created resource in storage.
+     * Add a manual method.
      *
      * @param  Request  $request
-     * @return Response
+     * @return JsonResponse
      */
     public function store(PaymentMethodRequest $request)
     {
@@ -47,9 +52,9 @@ class PaymentMethodsController extends Controller
     }
 
     /**
-     * Display the specified resource.
+     * One method.
      *
-     * @return Response
+     * @return JsonResponse
      */
     public function show(PaymentMethod $paymentMethod)
     {
@@ -59,10 +64,10 @@ class PaymentMethodsController extends Controller
     }
 
     /**
-     * Update the specified resource in storage.
+     * Rename a method.
      *
      * @param  Request  $request
-     * @return Response
+     * @return JsonResponse
      */
     public function update(PaymentMethodRequest $request, PaymentMethod $paymentMethod)
     {
@@ -74,9 +79,10 @@ class PaymentMethodsController extends Controller
     }
 
     /**
-     * Remove the specified resource from storage.
+     * Drop a method, unless money already points at it. Both refusals are
+     * domain conflicts (422), each carrying the key the SPA switches on.
      *
-     * @return Response
+     * @return JsonResponse
      */
     public function destroy(PaymentMethod $paymentMethod)
     {

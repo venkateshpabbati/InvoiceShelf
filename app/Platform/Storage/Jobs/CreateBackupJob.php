@@ -10,6 +10,9 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Spatie\Backup\Tasks\Backup\BackupJobFactory;
 
+/**
+ * Runs one backup against the disk named in the request payload.
+ */
 class CreateBackupJob implements ShouldQueue
 {
     use Dispatchable;
@@ -19,41 +22,38 @@ class CreateBackupJob implements ShouldQueue
 
     protected $data;
 
-    /**
-     * Create a new job instance.
-     *
-     * @return void
-     */
     public function __construct($data = [])
     {
         $this->data = $data;
     }
 
     /**
-     * Execute the job.
+     * Assemble the backup task, narrow it to the requested option and run it.
      */
     public function handle(): void
     {
-        $config = BackupConfigurationFactory::make($this->data);
-        $backupJob = BackupJobFactory::createFromConfig($config);
+        $job = BackupJobFactory::createFromConfig(
+            BackupConfigurationFactory::make($this->data)
+        );
+
         if (! defined('SIGINT')) {
-            $backupJob->disableSignals();
+            $job->disableSignals();
         }
 
-        if ($this->data['option'] === 'only-db') {
-            $backupJob->dontBackupFilesystem();
+        $option = $this->data['option'];
+
+        if ($option === 'only-db') {
+            $job->dontBackupFilesystem();
         }
 
-        if ($this->data['option'] === 'only-files') {
-            $backupJob->dontBackupDatabases();
+        if ($option === 'only-files') {
+            $job->dontBackupDatabases();
         }
 
-        if (! empty($this->data['option'])) {
-            $prefix = str_replace('_', '-', $this->data['option']).'-';
-
-            $backupJob->setFilename($prefix.date('Y-m-d-H-i-s').'.zip');
+        if (! empty($option)) {
+            $job->setFilename(str_replace('_', '-', $option).'-'.date('Y-m-d-H-i-s').'.zip');
         }
 
-        $backupJob->run();
+        $job->run();
     }
 }

@@ -20,6 +20,7 @@ use App\Platform\Pdf\Rendering\PdfTemplateUtils;
 use App\Support\Hashids\HashidConnection;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\View;
 
 class EstimateService implements EstimatePdfDataProvider
 {
@@ -45,14 +46,17 @@ class EstimateService implements EstimatePdfDataProvider
         $estimate = Estimate::create($attributes);
         $estimate->unique_hash = Hashids::connection(HashidConnection::Estimate->value)->encode($estimate->id);
         $serial = (new SerialNumberService)
-            ->setModel($estimate)
             ->setCompany($estimate->company_id)
             ->setCustomer($estimate->customer_id)
+            ->setModel($estimate)
             ->setNextNumbers();
 
-        $estimate->sequence_number = $serial->nextSequenceNumber;
-        $estimate->customer_sequence_number = $serial->nextCustomerSequenceNumber;
-        $estimate->save();
+        // Both sequences fall out of the same resolution pass. The visible
+        // number itself is rendered client-side and arrived with the payload.
+        $estimate->fill([
+            'sequence_number' => $serial->nextSequenceNumber,
+            'customer_sequence_number' => $serial->nextCustomerSequenceNumber,
+        ])->save();
 
         $companyCurrency = CompanySetting::getSetting('currency', $estimate->company_id);
 
@@ -81,8 +85,8 @@ class EstimateService implements EstimatePdfDataProvider
         ?iterable $customFields = null,
     ): Estimate {
         $serial = (new SerialNumberService)
-            ->setModel($estimate)
             ->setCompany($estimate->company_id)
+            ->setModel($estimate)
             ->setCustomer($attributes['customer_id'])
             ->setModelObject($estimate->id)
             ->setNextNumbers();
@@ -97,13 +101,13 @@ class EstimateService implements EstimatePdfDataProvider
             $this->exchangeRateRecorder->record($estimate);
         }
 
-        $estimate->items->map(function ($item) {
-            $fields = $item->fields()->get();
-
-            $fields->map(function ($field) {
-                $field->delete();
-            });
-        });
+        // Answers to item-level custom fields have no cascade of their own,
+        // so they are cleared row by row before the items are replaced.
+        foreach ($estimate->items as $lineItem) {
+            foreach ($lineItem->fields()->get() as $answer) {
+                $answer->delete();
+            }
+        }
 
         $estimate->items()->delete();
         $estimate->taxes()->delete();
@@ -118,13 +122,8 @@ class EstimateService implements EstimatePdfDataProvider
             $this->customFieldValueWriter->update($estimate, $customFields);
         }
 
-        return Estimate::with([
-            'items.taxes',
-            'items.fields',
-            'items.fields.customField',
-            'customer',
-            'taxes',
-        ])->findOrFail($estimate->id);
+        return Estimate::with(['items.taxes', 'items.fields', 'items.fields.customField', 'customer', 'taxes'])
+            ->findOrFail($estimate->id);
     }
 
     public function sendEstimateData(Estimate $estimate, array $data): array
@@ -163,15 +162,15 @@ class EstimateService implements EstimatePdfDataProvider
 
         if ($estimate->tax_per_item === 'YES') {
             foreach ($estimate->items as $item) {
-                foreach ($item->taxes as $tax) {
-                    $found = $taxes->filter(function ($item) use ($tax) {
-                        return $item->tax_type_id == $tax->tax_type_id;
-                    })->first();
+                foreach ($item->taxes as $appliedTax) {
+                    // Rows of one tax type collapse onto the first row seen for
+                    // it, which then carries the running total for the document.
+                    $running = $taxes->first(fn ($seen) => $seen->tax_type_id == $appliedTax->tax_type_id);
 
-                    if ($found) {
-                        $found->amount += $tax->amount;
+                    if ($running) {
+                        $running->amount += $appliedTax->amount;
                     } else {
-                        $taxes->push($tax);
+                        $taxes->push($appliedTax);
                     }
                 }
             }
@@ -180,14 +179,15 @@ class EstimateService implements EstimatePdfDataProvider
         $estimateTemplate = Estimate::find($estimate->id)->template_name;
 
         $company = Company::find($estimate->company_id);
-        $locale = CompanySetting::getSetting('language', $company->id);
-        $customFields = CustomField::where('model_type', 'Item')->get();
+        $language = CompanySetting::getSetting('language', $company->id);
+        $customFields = CustomField::query()->where('model_type', 'Item')->get();
 
-        App::setLocale($locale);
+        App::setLocale($language);
 
+        // Absent for a company that never uploaded one; the templates cope.
         $logo = $company->logo_path;
 
-        view()->share([
+        View::share([
             'estimate' => $estimate,
             'customFields' => $customFields,
             'logo' => $logo ?? null,
@@ -200,7 +200,10 @@ class EstimateService implements EstimatePdfDataProvider
 
         $templatePath = PdfTemplateUtils::resolveView('estimate', $estimateTemplate, 'estimate1');
 
-        if (request()->has('preview')) {
+        // `?preview` hands back the raw HTML instead of a rendered PDF.
+        $wantsHtmlPreview = request()->has('preview');
+
+        if ($wantsHtmlPreview) {
             return view($templatePath);
         }
 
@@ -216,9 +219,9 @@ class EstimateService implements EstimatePdfDataProvider
         $date = Carbon::now();
 
         $serial = (new SerialNumberService)
-            ->setModel($estimate)
             ->setCompany($estimate->company_id)
             ->setCustomer($estimate->customer_id)
+            ->setModel($estimate)
             ->setNextNumbers();
 
         $expiryDate = null;
@@ -264,9 +267,7 @@ class EstimateService implements EstimatePdfDataProvider
             'base_sub_total' => $estimate->sub_total * $exchangeRate,
             'base_tax' => $estimate->tax * $exchangeRate,
             'base_due_amount' => $estimate->total * $exchangeRate,
-            'currency_id' => $estimate->currency_id,
-            'sales_tax_type' => $estimate->sales_tax_type,
-            'sales_tax_address_type' => $estimate->sales_tax_address_type,
+            ...$estimate->only(['currency_id', 'sales_tax_type', 'sales_tax_address_type']),
         ]);
 
         $newEstimate->unique_hash = Hashids::connection(HashidConnection::Estimate->value)->encode($newEstimate->id);
@@ -302,28 +303,40 @@ class EstimateService implements EstimatePdfDataProvider
         $invoiceDate = Carbon::now();
         $dueDate = null;
 
-        $dueDateEnabled = CompanySetting::getSetting(
-            'invoice_set_due_date_automatically',
-            $estimate->company_id
-        );
+        $autoDueDate = CompanySetting::getSetting('invoice_set_due_date_automatically', $estimate->company_id);
 
-        if ($dueDateEnabled === 'YES') {
-            $dueDateDays = intval(CompanySetting::getSetting(
-                'invoice_due_date_days',
-                $estimate->company_id
-            ));
+        if ($autoDueDate === 'YES') {
+            $dueDateDays = (int) CompanySetting::getSetting('invoice_due_date_days', $estimate->company_id);
             $dueDate = Carbon::now()->addDays($dueDateDays)->format('Y-m-d');
         }
 
         $serial = (new SerialNumberService)
-            ->setModel(new Invoice)
             ->setCompany($estimate->company_id)
             ->setCustomer($estimate->customer_id)
             ->setSequenceScope(['type' => Invoice::TYPE_INVOICE])
+            ->setModel(new Invoice)
             ->setNextNumbers();
 
-        $templateName = $estimate->getInvoiceTemplateName();
+        $invoiceTemplate = $estimate->getInvoiceTemplateName();
         $exchangeRate = $estimate->exchange_rate;
+
+        // Columns the invoice inherits unchanged from the offer it settles.
+        $carriedOver = $estimate->only([
+            'customer_id',
+            'company_id',
+            'currency_id',
+            'sub_total',
+            'discount',
+            'discount_type',
+            'discount_val',
+            'tax',
+            'total',
+            'tax_per_item',
+            'discount_per_item',
+            'notes',
+            'sales_tax_type',
+            'sales_tax_address_type',
+        ]);
 
         $invoice = Invoice::create([
             'creator_id' => Auth::id(),
@@ -332,30 +345,19 @@ class EstimateService implements EstimatePdfDataProvider
             'invoice_number' => $serial->getNextNumber(),
             'sequence_number' => $serial->nextSequenceNumber,
             'customer_sequence_number' => $serial->nextCustomerSequenceNumber,
+            // A second, independent rendering of the same number format rather
+            // than a copy of the number above.
             'reference_number' => $serial->getNextNumber(),
-            'customer_id' => $estimate->customer_id,
-            'company_id' => $estimate->company_id,
-            'template_name' => $templateName,
+            'template_name' => $invoiceTemplate,
             'status' => Invoice::STATUS_DRAFT,
             'paid_status' => Invoice::STATUS_UNPAID,
-            'sub_total' => $estimate->sub_total,
-            'discount' => $estimate->discount,
-            'discount_type' => $estimate->discount_type,
-            'discount_val' => $estimate->discount_val,
-            'total' => $estimate->total,
             'due_amount' => $estimate->total,
-            'tax_per_item' => $estimate->tax_per_item,
-            'discount_per_item' => $estimate->discount_per_item,
-            'tax' => $estimate->tax,
-            'notes' => $estimate->notes,
             'exchange_rate' => $exchangeRate,
             'base_discount_val' => $estimate->discount_val * $exchangeRate,
             'base_sub_total' => $estimate->sub_total * $exchangeRate,
             'base_total' => $estimate->total * $exchangeRate,
             'base_tax' => $estimate->tax * $exchangeRate,
-            'currency_id' => $estimate->currency_id,
-            'sales_tax_type' => $estimate->sales_tax_type,
-            'sales_tax_address_type' => $estimate->sales_tax_address_type,
+            ...$carriedOver,
         ]);
 
         $invoice->unique_hash = Hashids::connection(HashidConnection::Invoice->value)->encode($invoice->id);

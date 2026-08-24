@@ -9,8 +9,18 @@ use App\Domains\Reporting\Http\Controllers\TaxSummaryReportController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/customers/{customer}/statement', CustomerStatementReportController::class);
-Route::get('/sales/customers/{hash}', CustomerSalesReportController::class);
-Route::get('/sales/items/{hash}', ItemSalesReportController::class);
-Route::get('/expenses/{hash}', ExpensesReportController::class);
-Route::get('/tax-summary/{hash}', TaxSummaryReportController::class);
-Route::get('/profit-loss/{hash}', ProfitLossReportController::class);
+
+// Each financial report is addressed by the hash of the company it covers.
+// The hash names the company and nothing more: the controllers still check
+// the session for the report ability and for membership of that company.
+$hashedReports = [
+    '/sales/customers' => CustomerSalesReportController::class,
+    '/sales/items' => ItemSalesReportController::class,
+    '/expenses' => ExpensesReportController::class,
+    '/tax-summary' => TaxSummaryReportController::class,
+    '/profit-loss' => ProfitLossReportController::class,
+];
+
+foreach ($hashedReports as $path => $controller) {
+    Route::get($path.'/{hash}', $controller);
+}

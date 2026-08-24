@@ -7,32 +7,44 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Schema;
 use Symfony\Component\HttpFoundation\Response;
 
+/**
+ * Decides which company the rest of the request runs against.
+ *
+ * The caller names a workspace in the `company` header. A header that names
+ * nothing the caller belongs to is not an error here: it is quietly overwritten
+ * with the first company on the caller's membership list, so everything
+ * downstream may read the header without vetting it again. Two situations skip
+ * the rewrite -- an install whose membership table has not been created yet, and
+ * the platform administrator arriving with no header at all (admin mode).
+ */
 class CompanyMiddleware
 {
     public function handle(Request $request, Closure $next): Response
     {
-        if (Schema::hasTable('user_company')) {
-            $user = $request->user();
+        if (! Schema::hasTable('user_company')) {
+            return $next($request);
+        }
 
-            if (! $user) {
-                return $next($request);
-            }
+        $actor = $request->user();
 
-            $firstCompany = $user->companies()->first();
+        if ($actor === null) {
+            return $next($request);
+        }
 
-            // User has no companies — allow request through without company header
-            if (! $firstCompany) {
-                return $next($request);
-            }
+        $fallback = $actor->companies()->first();
 
-            // Super admin without company header — allow pass-through (admin mode)
-            if ($user->isSuperAdmin() && ! $request->header('company')) {
-                return $next($request);
-            }
+        if ($fallback === null) {
+            return $next($request);
+        }
 
-            if (! $request->header('company') || ! $user->hasCompany($request->header('company'))) {
-                $request->headers->set('company', $firstCompany->id);
-            }
+        $requested = $request->header('company');
+
+        if ($actor->isSuperAdmin() && ! $requested) {
+            return $next($request);
+        }
+
+        if (! $requested || ! $actor->hasCompany($requested)) {
+            $request->headers->set('company', $fallback->id);
         }
 
         return $next($request);

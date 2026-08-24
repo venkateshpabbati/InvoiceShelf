@@ -5,15 +5,22 @@ namespace App\Domains\Contacts\Notifications;
 use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Bus\Queueable;
 use Illuminate\Notifications\Messages\MailMessage;
-use Illuminate\Notifications\Notification;
 
+/**
+ * The reset-link mail a portal contact receives.
+ *
+ * It extends the framework notification purely to inherit its token handling.
+ * The message is composed here rather than through the framework's callbacks
+ * because the link has to carry the company slug the portal hangs off.
+ */
 class CustomerMailResetPasswordNotification extends ResetPassword
 {
     use Queueable;
 
     /**
-     * Create a new notification instance.
+     * Hold on to the freshly minted reset token.
      *
+     * @param  string  $token
      * @return void
      */
     public function __construct($token)
@@ -22,7 +29,7 @@ class CustomerMailResetPasswordNotification extends ResetPassword
     }
 
     /**
-     * Get the notification's delivery channels.
+     * Mail is the only channel this notification travels on.
      *
      * @param  mixed  $notifiable
      */
@@ -32,31 +39,39 @@ class CustomerMailResetPasswordNotification extends ResetPassword
     }
 
     /**
-     * Get the mail representation of the notification.
+     * Compose the reset mail for the contact.
+     *
+     * The expiry sentence quotes the *user* broker's lifetime even though the
+     * token came from the customer broker. Both are configured alike today,
+     * so the sentence happens to be accurate.
      *
      * @param  mixed  $notifiable
      */
     public function toMail($notifiable): MailMessage
     {
-        $link = url("/{$notifiable->company->slug}/customer/reset/password/".$this->token);
+        $slug = $notifiable->company->slug;
+        $resetUrl = url("/{$slug}/customer/reset/password/".$this->token);
+        $minutes = config('auth.passwords.users.expire');
+
+        $opening = 'Hello! You are receiving this email because we received a password reset request for your account.';
+        $expiry = 'This password reset link will expire in '.$minutes.' minutes';
+        $closing = 'If you did not request a password reset, no further action is required.';
 
         return (new MailMessage)
             ->subject('Reset Password Notification')
-            ->line('Hello! You are receiving this email because we received a password reset request for your account.')
-            ->action('Reset Password', $link)
-            ->line('This password reset link will expire in '.config('auth.passwords.users.expire').' minutes')
-            ->line('If you did not request a password reset, no further action is required.');
+            ->line($opening)
+            ->action('Reset Password', $resetUrl)
+            ->line($expiry)
+            ->line($closing);
     }
 
     /**
-     * Get the array representation of the notification.
+     * Nothing is stored for the database channel, which is never used.
      *
      * @param  mixed  $notifiable
      */
     public function toArray($notifiable): array
     {
-        return [
-            //
-        ];
+        return [];
     }
 }

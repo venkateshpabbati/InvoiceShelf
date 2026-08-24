@@ -28,6 +28,7 @@ class ContactsServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Gate::policy(Customer::class, CustomerPolicy::class);
-        Gate::define('delete multiple customers', [CustomerPolicy::class, 'deleteMultiple']);
+        $bulkCustomerDelete = [CustomerPolicy::class, 'deleteMultiple'];
+        Gate::define('delete multiple customers', $bulkCustomerDelete);
     }
 }

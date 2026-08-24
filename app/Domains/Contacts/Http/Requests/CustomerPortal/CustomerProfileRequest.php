@@ -5,13 +5,39 @@ namespace App\Domains\Contacts\Http\Requests\CustomerPortal;
 use App\Domains\Contacts\Models\Address;
 use App\Rules\IdnEmail;
 use Illuminate\Foundation\Http\FormRequest;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Unique;
 
+/**
+ * What a contact is allowed to change about itself from inside the portal.
+ *
+ * Nothing here is required: the payload is a patch, so every key is optional and
+ * only what was actually sent gets validated. Beyond the profile fields the form
+ * carries two optional address blocks and the avatar controls, and the accessors
+ * at the bottom hand the controller each of those pieces ready to store.
+ */
 class CustomerProfileRequest extends FormRequest
 {
     /**
-     * Determine if the user is authorized to make this request.
+     * The keys accepted inside the `billing` and `shipping` blocks.
+     *
+     * @var list<string>
+     */
+    private const ADDRESS_KEYS = [
+        'name',
+        'address_street_1',
+        'address_street_2',
+        'city',
+        'state',
+        'country_id',
+        'zip',
+        'phone',
+        'fax',
+    ];
+
+    /**
+     * The portal guard has already vetted the caller, and a contact is only
+     * ever handed its own record, so there is nothing further to check.
      */
     public function authorize(): bool
     {
@@ -19,125 +45,96 @@ class CustomerProfileRequest extends FormRequest
     }
 
     /**
-     * Get the validation rules that apply to the request.
+     * Constraints applied to the submitted profile patch.
      */
     public function rules(): array
     {
-        return [
-            'name' => [
-                'nullable',
-            ],
-            'password' => [
-                'nullable',
-                'min:8',
-            ],
-            'email' => [
-                'nullable',
-                new IdnEmail,
-                Rule::unique('customers')->where('company_id', $this->header('company'))->ignore(Auth::id(), 'id'),
-            ],
-            'billing.name' => [
-                'nullable',
-            ],
-            'billing.address_street_1' => [
-                'nullable',
-            ],
-            'billing.address_street_2' => [
-                'nullable',
-            ],
-            'billing.city' => [
-                'nullable',
-            ],
-            'billing.state' => [
-                'nullable',
-            ],
-            'billing.country_id' => [
-                'nullable',
-            ],
-            'billing.zip' => [
-                'nullable',
-            ],
-            'billing.phone' => [
-                'nullable',
-            ],
-            'billing.fax' => [
-                'nullable',
-            ],
-            'shipping.name' => [
-                'nullable',
-            ],
-            'shipping.address_street_1' => [
-                'nullable',
-            ],
-            'shipping.address_street_2' => [
-                'nullable',
-            ],
-            'shipping.city' => [
-                'nullable',
-            ],
-            'shipping.state' => [
-                'nullable',
-            ],
-            'shipping.country_id' => [
-                'nullable',
-            ],
-            'shipping.zip' => [
-                'nullable',
-            ],
-            'shipping.phone' => [
-                'nullable',
-            ],
-            'shipping.fax' => [
-                'nullable',
-            ],
-            'customer_avatar' => [
-                'nullable',
-                'file',
-                'mimes:gif,jpg,png',
-                'max:20000',
-            ],
-            'is_customer_avatar_removed' => [
-                'nullable',
-                'boolean',
-            ],
+        $rules = [
+            'name' => ['nullable'],
+            'password' => ['nullable', 'min:8'],
+            'email' => ['nullable', new IdnEmail, $this->emailIsFree()],
         ];
+
+        foreach (['billing', 'shipping'] as $block) {
+            foreach (self::ADDRESS_KEYS as $key) {
+                $rules["{$block}.{$key}"] = ['nullable'];
+            }
+        }
+
+        $rules['customer_avatar'] = ['nullable', 'file', 'mimes:gif,jpg,png', 'max:20000'];
+        $rules['is_customer_avatar_removed'] = ['nullable', 'boolean'];
+
+        return $rules;
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The profile columns the controller may hand straight to the model.
+     *
+     * @return array<string, mixed>
+     */
     public function customerAttributes(): array
     {
-        return $this->safe()->only(['name', 'email', 'password']);
+        return $this->safe()->only([
+            'name',
+            'email',
+            'password',
+        ]);
     }
 
-    /** @return array<string, mixed>|null */
+    /**
+     * The submitted shipping block, or null when none was sent.
+     *
+     * @return array<string, mixed>|null
+     */
     public function shippingAddress(): ?array
     {
-        $address = $this->input('shipping');
-
-        if (! is_array($address)) {
-            return null;
-        }
-
-        return collect($address)
-            ->merge([
-                'type' => Address::SHIPPING_TYPE,
-            ])
-            ->toArray();
+        return $this->addressBlock('shipping', Address::SHIPPING_TYPE);
     }
 
-    /** @return array<string, mixed>|null */
+    /**
+     * The submitted billing block, or null when none was sent.
+     *
+     * @return array<string, mixed>|null
+     */
     public function billingAddress(): ?array
     {
-        $address = $this->input('billing');
+        return $this->addressBlock('billing', Address::BILLING_TYPE);
+    }
 
-        if (! is_array($address)) {
+    /**
+     * No two contacts of the same company may share an address.
+     *
+     * Both operands are read from the ambient request exactly as they always
+     * have been: the tenant comes from the `company` request header (which the
+     * slug-scoped portal routes do not send) and the row to skip comes from the
+     * default guard rather than the portal one. Left untouched deliberately.
+     */
+    private function emailIsFree(): Unique
+    {
+        return Rule::unique('customers')
+            ->where('company_id', $this->header('company'))
+            ->ignore(auth()->id(), 'id');
+    }
+
+    /**
+     * Lift one address block off the payload and stamp its type onto it.
+     *
+     * Anything that did not arrive as an array - absent, null, a scalar - comes
+     * back as null, which is how the caller tells "replace this address" apart
+     * from "leave this address alone".
+     *
+     * @return array<string, mixed>|null
+     */
+    private function addressBlock(string $block, string $type): ?array
+    {
+        $submitted = $this->input($block);
+
+        if (! is_array($submitted)) {
             return null;
         }
 
-        return collect($address)
-            ->merge([
-                'type' => Address::BILLING_TYPE,
-            ])
+        return collect($submitted)
+            ->merge(['type' => $type])
             ->toArray();
     }
 }
