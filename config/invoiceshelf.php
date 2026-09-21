@@ -67,13 +67,14 @@ return [
     */
     'marketplace' => [
         'channel' => env('MARKETPLACE_CHANNEL', 'stable'),
-        'module_api_version' => (string) env('MARKETPLACE_MODULE_API_VERSION', '1.2.0'),
+        'module_api_version' => (string) env('MARKETPLACE_MODULE_API_VERSION', '1.3.0'),
         // JSON object: {"key-id":"base64-ed25519-public-key"}. Keys add to
         // (or replace values in) the built-in pinned map. Key identity is part
         // of the signed release and must match this trusted map.
         'public_keys' => array_replace(
             [
                 'official-modules-2026-01' => 'sIDGuOAaMVzPv9I/GPbWp9ci5aUI5HcM5rZ0tKxW6dc=',
+                'official-modules-2026-09' => 'VK8b5GsK7T7JFcQutq6Rv/xQ98Ata/HP1C74ZNNlYEo=',
             ],
             json_decode((string) env('MARKETPLACE_PUBLIC_KEYS', '{}'), true) ?: [],
         ),
