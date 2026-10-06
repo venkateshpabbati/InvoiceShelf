@@ -46,6 +46,9 @@ class ItemsController extends Controller
 
         $items = Item::query()
             ->whereCompany()
+            // The list can carry a column per printed definition, so the
+            // answers are loaded once rather than asked for per row.
+            ->with('fields.customField')
             ->leftJoin('units', 'items.unit_id', '=', 'units.id')
             ->applyFilters($filters)
             ->select(['items.*', 'units.name as unit_name'])
@@ -64,7 +67,7 @@ class ItemsController extends Controller
     {
         $this->authorize('view', $item);
 
-        return new ItemResource($item);
+        return new ItemResource($item->load('fields.customField'));
     }
 
     /**
@@ -83,10 +86,11 @@ class ItemsController extends Controller
         $creatorId = (int) $request->user()->getAuthIdentifier();
 
         $created = $this->itemService->create(
-            $request->validated(),
+            $request->getItemPayload(),
             $request->input('taxes', []),
             $companyId,
             $creatorId,
+            $request->input('customFields'),
         );
 
         return new ItemResource($created);
@@ -106,9 +110,10 @@ class ItemsController extends Controller
 
         $updated = $this->itemService->update(
             $item,
-            $request->validated(),
+            $request->getItemPayload(),
             $request->input('taxes', []),
             $companyId,
+            $request->input('customFields'),
         );
 
         return new ItemResource($updated);

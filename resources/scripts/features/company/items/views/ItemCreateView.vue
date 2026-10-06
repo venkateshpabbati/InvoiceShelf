@@ -9,6 +9,8 @@ import {
   helpers,
 } from '@vuelidate/validators'
 import useVuelidate from '@vuelidate/core'
+import CustomFieldInput from '@/scripts/features/shared/custom-fields/CustomFieldInput.vue'
+import { useCustomFields } from '@/scripts/features/shared/custom-fields/use-custom-fields'
 import { useItemStore } from '../store'
 import { useTaxTypes } from '../use-tax-types'
 import { useCompanyStore } from '../../../../stores/company.store'
@@ -45,6 +47,15 @@ const isSaving = ref<boolean>(false)
 const taxPerItem = ref<string>(companyStore.selectedCompanySettings.tax_per_item || 'NO')
 const isFetchingInitialData = ref<boolean>(false)
 const isEdit = computed<boolean>(() => route.name === 'items.edit')
+
+const customFieldScope = 'currentItem'
+
+const customFields = useCustomFields({
+  store: itemStore,
+  storeProp: 'currentItem',
+  type: 'Item',
+  isEdit: () => isEdit.value,
+})
 
 itemStore.resetCurrentItem()
 loadData()
@@ -200,22 +211,42 @@ async function submitItem(): Promise<void> {
 
 <template>
   <BasePage>
-    <BasePageHeader :title="pageTitle">
-      <BaseBreadcrumb>
-        <BaseBreadcrumbItem :title="$t('general.home')" to="dashboard" />
-        <BaseBreadcrumbItem :title="$t('items.item', 2)" to="/admin/items" />
-        <BaseBreadcrumbItem :title="pageTitle" to="#" active />
-      </BaseBreadcrumb>
-    </BasePageHeader>
-
     <ItemUnitModal />
 
+    <!-- A short form: the header keeps to its width, so Save sits above it -->
     <form
-      class="grid lg:grid-cols-2 mt-6"
+      class="flex flex-col w-full max-w-2xl gap-4 md:gap-5"
       action="submit"
       @submit.prevent="submitItem"
     >
-      <BaseCard class="w-full">
+      <!-- On phones Save moves to the bottom bar, still submitting this form -->
+      <BasePageHeader :help="$t('page_help.items')" :title="pageTitle" phone-actions="bar">
+        <BaseBreadcrumb>
+          <BaseBreadcrumbItem :title="$t('general.home')" to="dashboard" />
+          <BaseBreadcrumbItem :title="$t('items.item', 2)" to="/admin/items" />
+          <BaseBreadcrumbItem :title="pageTitle" to="#" active />
+        </BaseBreadcrumb>
+
+        <template #actions>
+          <BaseButton
+            :content-loading="isFetchingInitialData"
+            type="submit"
+            :loading="isSaving"
+            :disabled="isSaving"
+          >
+            <template #left="slotProps">
+              <BaseIcon
+                v-if="!isSaving"
+                name="ArrowDownOnSquareIcon"
+                :class="slotProps.class"
+              />
+            </template>
+            {{ isEdit ? $t('items.update_item') : $t('items.save_item') }}
+          </BaseButton>
+        </template>
+      </BasePageHeader>
+
+      <BaseCard class="w-full" container-class="p-4 md:p-5">
         <BaseInputGrid layout="one-column">
           <BaseInputGroup
             :label="$t('items.name')"
@@ -262,7 +293,7 @@ async function submitItem(): Promise<void> {
                 <BaseSelectAction @click="addItemUnit">
                   <BaseIcon
                     name="PlusIcon"
-                    class="h-4 mr-2 -ml-2 text-center text-primary-400"
+                    class="h-4 me-2 -ms-2 text-center text-primary-400"
                   />
                   {{ $t('settings.customization.items.add_item_unit') }}
                 </BaseSelectAction>
@@ -309,22 +340,14 @@ async function submitItem(): Promise<void> {
             />
           </BaseInputGroup>
 
-          <div>
-            <BaseButton
-              :content-loading="isFetchingInitialData"
-              type="submit"
-              :loading="isSaving"
-            >
-              <template #left="slotProps">
-                <BaseIcon
-                  v-if="!isSaving"
-                  name="ArrowDownOnSquareIcon"
-                  :class="slotProps.class"
-                />
-              </template>
-              {{ isEdit ? $t('items.update_item') : $t('items.save_item') }}
-            </BaseButton>
-          </div>
+          <!-- Answers recorded here are copied onto a document line when
+               the item is put on an invoice or an estimate. -->
+          <CustomFieldInput
+            v-for="field in customFields"
+            :key="field.id"
+            :custom-field-scope="customFieldScope"
+            :field="field"
+          />
         </BaseInputGrid>
       </BaseCard>
     </form>

@@ -48,7 +48,7 @@ const roleColumns = computed<TableColumn[]>(() => [
   {
     key: 'actions',
     label: '',
-    tdClass: 'text-right text-sm font-medium',
+    tdClass: 'text-end text-sm font-medium',
     sortable: false,
   },
 ])
@@ -81,6 +81,16 @@ async function openRoleModal(): Promise<void> {
     refreshData: table.value?.refresh,
   })
 }
+
+/** A preset's permissions, shown read only: the super administrator owns it. */
+function viewRole(row: { id: number; title?: string | null; name: string }): void {
+  modalStore.openModal({
+    title: row.title ?? row.name,
+    componentName: 'RolesModal',
+    size: 'lg',
+    data: { id: row.id, readonly: true },
+  })
+}
 </script>
 
 <template>
@@ -105,27 +115,43 @@ async function openRoleModal(): Promise<void> {
       :columns="roleColumns"
       class="mt-14"
     >
+      <!-- A preset's copy is named preset:{key}; show its title instead -->
+      <template #cell-name="{ row }">
+        {{ row.data.preset ? row.data.title : row.data.name }}
+      </template>
+
       <template #cell-created_at="{ row }">
         {{ row.data.formatted_created_at }}
       </template>
 
       <template #cell-actions="{ row }">
         <RoleDropdown
-          v-if="
-            userStore.currentUser?.is_owner &&
-            row.data.name !== 'super admin' &&
-            row.data.name !== 'owner'
-          "
+          v-if="userStore.currentUser?.is_owner && !row.data.preset && row.data.name !== 'super admin'"
           :row="row.data"
           :table="table"
           :load-data="refreshTable"
         />
-        <span
-          v-else-if="row.data.name === 'owner' || row.data.name === 'super admin'"
-          class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-gray-100 text-gray-600 ring-1 ring-inset ring-gray-300/50"
+        <!-- Presets belong to the super administrator: assignable, not editable here -->
+        <div
+          v-else-if="row.data.preset || row.data.name === 'super admin'"
+          class="flex items-center justify-end gap-2"
         >
-          {{ $t('settings.roles.system_role') }}
-        </span>
+          <span
+            class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium bg-surface-tertiary text-muted ring-1 ring-inset ring-line-default"
+            :title="row.data.preset && row.data.preset !== 'owner' ? $t('settings.roles.preset_hint') : undefined"
+          >
+            {{ row.data.preset && row.data.preset !== 'owner' ? $t('settings.roles.preset') : $t('settings.roles.system_role') }}
+          </span>
+          <BaseButton
+            v-if="row.data.preset"
+            size="xs"
+            variant="white"
+            :aria-label="$t('settings.roles.view_permissions_of', { role: row.data.title ?? row.data.name })"
+            @click="viewRole(row.data)"
+          >
+            <BaseIcon name="EyeIcon" class="h-4 w-4" aria-hidden="true" />
+          </BaseButton>
+        </div>
       </template>
     </BaseTable>
   </BaseSettingCard>

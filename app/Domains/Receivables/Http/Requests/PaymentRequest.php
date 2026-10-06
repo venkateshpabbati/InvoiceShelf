@@ -4,6 +4,8 @@ namespace App\Domains\Receivables\Http\Requests;
 
 use App\Domains\Accounts\Models\CompanySetting;
 use App\Domains\Contacts\Models\Customer;
+use App\Domains\Metadata\Http\Requests\Concerns\ValidatesCustomFields;
+use App\Domains\Receivables\Application\Composition\PaymentAttributes;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Unique;
@@ -16,6 +18,8 @@ use Illuminate\Validation\Validator;
  */
 class PaymentRequest extends FormRequest
 {
+    use ValidatesCustomFields;
+
     /**
      * The payment abilities are checked by the controller.
      */
@@ -49,6 +53,7 @@ class PaymentRequest extends FormRequest
             'allocations.*.amount' => ['required', 'integer', 'min:1'],
             'payment_method_id' => ['nullable'],
             'notes' => ['nullable'],
+            ...$this->customFieldRules(),
         ];
     }
 
@@ -69,31 +74,17 @@ class PaymentRequest extends FormRequest
                 __('validation.prohibited', ['attribute' => 'invoice id'])
             );
         });
+        $this->validateCustomFieldAnswers($validator);
     }
 
     /**
      * The stored attributes.
      *
-     * A payment is always denominated in the customer's currency: at home the
-     * rate is 1, abroad it is the submitted one, and the base amount is the
-     * converted total rounded to whole minor units.
+     * @return array<string, mixed>
      */
-    public function getPaymentPayload()
+    public function getPaymentPayload(): array
     {
-        $currencyId = Customer::find($this->customer_id)->currency_id;
-        $homeCurrency = CompanySetting::getSetting('currency', $this->header('company'));
-        $rate = (string) $homeCurrency !== (string) $currencyId ? (float) $this->exchange_rate : 1;
-
-        return collect($this->validated())
-            ->except('allocations')
-            ->merge([
-                'creator_id' => $this->user()->id,
-                'company_id' => $this->header('company'),
-                'exchange_rate' => $rate,
-                'base_amount' => (int) round($this->amount * $rate),
-                'currency_id' => $currencyId,
-            ])
-            ->toArray();
+        return PaymentAttributes::fromInput($this->validated(), $this->header('company'), $this->user()->id);
     }
 
     /**
@@ -102,7 +93,7 @@ class PaymentRequest extends FormRequest
      */
     private function uniqueNumber(): Unique
     {
-        $rule = Rule::unique('payments')->where('company_id', $this->header('company'));
+        $rule = Rule::unique('customer_payments')->where('company_id', $this->header('company'));
 
         return $this->isMethod('PUT')
             ? $rule->ignore($this->route('payment')->id)

@@ -5,7 +5,13 @@ export const API = {
   FORGOT_PASSWORD: '/api/v1/auth/password/email',
   RESET_PASSWORD: '/api/v1/auth/reset/password',
   AUTH_CHECK: '/api/v1/auth/check',
+  AUTH_TOKENS: '/api/v1/auth/tokens', // the caller's own devices: list, and revoke one by id
   CSRF_COOKIE: '/sanctum/csrf-cookie',
+  // Bearer sign-in, used by the mobile client instead of the session pair
+  // above. Both already end in `/login` and `/auth/logout`, so the 401
+  // interceptor's exempt list covers them without a second entry.
+  TOKEN_LOGIN: '/api/v1/auth/login',
+  TOKEN_LOGOUT: '/api/v1/auth/logout',
   REGISTER_WITH_INVITATION: '/api/v1/auth/register-with-invitation',
   INSTALLATION_LOGIN: '/api/v1/installation/login',
   INSTALLATION_SET_DOMAIN: '/api/v1/installation/set-domain',
@@ -108,6 +114,7 @@ export const API = {
 
   // Mail Configuration (global)
   MAIL_DRIVERS: '/api/v1/mail/drivers',
+  COMPANY_MAIL_DRIVERS: '/api/v1/company/mail/drivers',
   MAIL_CONFIG: '/api/v1/mail/config',
   MAIL_TEST: '/api/v1/mail/test',
 
@@ -133,6 +140,8 @@ export const API = {
 
   // Exchange Rates & Currencies
   CURRENCIES: '/api/v1/currencies',
+  ADMIN_CURRENCIES: '/api/v1/super-admin/currencies',
+  ADMIN_CURRENCIES_REFRESH: '/api/v1/super-admin/currencies/refresh',
   CURRENCIES_USED: '/api/v1/currencies/used',
   CURRENCIES_BULK_UPDATE: '/api/v1/currencies/bulk-update-exchange-rate',
   EXCHANGE_RATE_PROVIDERS: '/api/v1/exchange-rate-providers',
@@ -169,4 +178,12 @@ export const API = {
   SUPER_ADMIN_COMPANIES: '/api/v1/super-admin/companies',
   SUPER_ADMIN_USERS: '/api/v1/super-admin/users',
   SUPER_ADMIN_STOP_IMPERSONATING: '/api/v1/super-admin/stop-impersonating',
+  SUPER_ADMIN_MCP: '/api/v1/super-admin/mcp', // the MCP server switch, its keys and redirect domains
+  SUPER_ADMIN_MCP_KEYS: '/api/v1/super-admin/mcp/keys',
+  SUPER_ADMIN_ROLE_PRESETS: '/api/v1/super-admin/role-presets', // roles every company gets
+  SUPER_ADMIN_ABILITIES: '/api/v1/super-admin/abilities', // the ability catalogue, without a company
+
+  // MCP: where AI apps connect, and the caller's own connected apps
+  MCP_SERVER: '/api/v1/mcp/server',
+  MCP_CONNECTIONS: '/api/v1/mcp/connections',
 } as const

@@ -6,13 +6,23 @@ use App\Domains\Accounts\Models\Company;
 use App\Domains\Accounts\Models\CompanySetting;
 use App\Domains\Contacts\Models\Customer;
 use App\Domains\Metadata\Contracts\CustomFieldValueWriter;
+use App\Domains\Metadata\Models\CustomField;
 use App\Domains\Sales\Contracts\DocumentExchangeRateRecorder;
+use App\Domains\Sales\Contracts\RecurringInvoiceNotifier;
 use App\Domains\Sales\Models\Invoice;
 use App\Domains\Sales\Models\RecurringInvoice;
-use App\Facades\Hashids;
-use App\Support\Hashids\HashidConnection;
+use App\Support\MoneyConversion;
+use App\Support\PublicToken;
+use App\Support\Recurrence\Cadence;
+use App\Support\Recurrence\RecurrenceRunner;
+use App\Support\Recurrence\ScheduleState;
 use Carbon\Carbon;
+use Carbon\CarbonImmutable;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class RecurringInvoiceService
 {
@@ -21,6 +31,8 @@ class RecurringInvoiceService
         private readonly InvoiceService $invoiceService,
         private readonly CustomFieldValueWriter $customFieldValueWriter,
         private readonly DocumentExchangeRateRecorder $exchangeRateRecorder,
+        private readonly RecurrenceRunner $runner,
+        private readonly RecurringInvoiceNotifier $notifier,
     ) {}
 
     /**
@@ -42,10 +54,10 @@ class RecurringInvoiceService
             $this->exchangeRateRecorder->record($recurringInvoice);
         }
 
-        $this->createItems($recurringInvoice, $items);
+        $this->documentItemService->createItems($recurringInvoice, $items);
 
         if ($taxes) {
-            $this->createTaxes($recurringInvoice, $taxes);
+            $this->documentItemService->createTaxes($recurringInvoice, $taxes);
         }
 
         if ($customFields) {
@@ -55,6 +67,18 @@ class RecurringInvoiceService
         return $recurringInvoice;
     }
 
+    /**
+     * Save changes to a schedule.
+     *
+     * The creator stays whoever set the schedule up. The next run stays where
+     * it was unless the frequency or the start date changed: the form sends
+     * one counted from the start date, and taking it would bill the latest
+     * period again. A changed cadence carries on from now (or from a start
+     * date still ahead); a schedule made active again, from paused or
+     * completed, carries on from today; raising a limit reactivates a
+     * completed one. Saving clears the last failure, so the next run tries
+     * again straight away.
+     */
     public function update(
         RecurringInvoice $recurringInvoice,
         array $attributes,
@@ -62,7 +86,22 @@ class RecurringInvoiceService
         ?array $taxes = null,
         ?iterable $customFields = null,
     ): RecurringInvoice {
-        $recurringInvoice->update($attributes);
+        $cadenceChanged = $this->cadenceChanged($recurringInvoice, $attributes);
+
+        $recurringInvoice->fill(Arr::except($attributes, ['next_invoice_at', 'creator_id']));
+        $recurringInvoice->last_error = null;
+
+        if ($cadenceChanged) {
+            $recurringInvoice->next_invoice_at = RecurringInvoice::getNextInvoiceDate(
+                $recurringInvoice->frequency,
+                $recurringInvoice->nextRunCountsFrom(),
+                $recurringInvoice->companyTimeZone(),
+            );
+        }
+
+        ScheduleState::afterEdit($recurringInvoice, $cadenceChanged);
+        $recurringInvoice->save();
+        $this->runner->forgetFailure($recurringInvoice);
 
         $companyCurrency = CompanySetting::getSetting('currency', $recurringInvoice->company_id);
 
@@ -70,12 +109,20 @@ class RecurringInvoiceService
             $this->exchangeRateRecorder->record($recurringInvoice);
         }
 
+        // Answers to item-level custom fields have no cascade of their own,
+        // so they are cleared row by row before the items are replaced.
+        foreach ($recurringInvoice->items as $lineItem) {
+            foreach ($lineItem->fields()->get() as $answer) {
+                $answer->delete();
+            }
+        }
+
         $recurringInvoice->items()->delete();
-        $this->createItems($recurringInvoice, $items);
+        $this->documentItemService->createItems($recurringInvoice, $items);
 
         $recurringInvoice->taxes()->delete();
         if ($taxes) {
-            $this->createTaxes($recurringInvoice, $taxes);
+            $this->documentItemService->createTaxes($recurringInvoice, $taxes);
         }
 
         if ($customFields) {
@@ -83,6 +130,50 @@ class RecurringInvoiceService
         }
 
         return $recurringInvoice;
+    }
+
+    /**
+     * Whether a save changes when the schedule runs.
+     *
+     * @param  array<string, mixed>  $attributes
+     */
+    private function cadenceChanged(RecurringInvoice $recurringInvoice, array $attributes): bool
+    {
+        if (array_key_exists('frequency', $attributes) && $attributes['frequency'] !== $recurringInvoice->frequency) {
+            return true;
+        }
+
+        if (! array_key_exists('starts_at', $attributes)) {
+            return false;
+        }
+
+        return $recurringInvoice->starts_at === null
+            || ! Carbon::parse($attributes['starts_at'])->equalTo(Carbon::parse($recurringInvoice->starts_at));
+    }
+
+    /**
+     * Pause a schedule, or resume one. A resumed schedule skips the runs that
+     * fell while it was paused, but keeps today's if it has not been made.
+     */
+    public function act(RecurringInvoice $recurringInvoice, string $action): RecurringInvoice
+    {
+        return DB::transaction(function () use ($recurringInvoice, $action): RecurringInvoice {
+            $schedule = RecurringInvoice::query()->whereKey($recurringInvoice->id)->lockForUpdate()->firstOrFail();
+
+            if ($action === 'pause') {
+                $this->ensure($schedule->status === RecurringInvoice::ACTIVE, 'recurring_invoice_not_active');
+                $schedule->status = RecurringInvoice::ON_HOLD;
+            } else {
+                $this->ensure($schedule->status === RecurringInvoice::ON_HOLD, 'recurring_invoice_not_paused');
+                $schedule->status = RecurringInvoice::ACTIVE;
+                ScheduleState::restartFromToday($schedule);
+                ScheduleState::settle($schedule);
+            }
+
+            $schedule->save();
+
+            return $schedule;
+        });
     }
 
     public function delete(Collection $ids): bool
@@ -101,6 +192,14 @@ class RecurringInvoiceService
             $lineItems = $recurringInvoice->items();
 
             if ($lineItems->exists()) {
+                // Same reason as in update(): a bulk delete never reaches the
+                // per-row hook that would clear each line's answers.
+                foreach ($recurringInvoice->items as $lineItem) {
+                    foreach ($lineItem->fields()->get() as $answer) {
+                        $answer->delete();
+                    }
+                }
+
                 $lineItems->delete();
             }
 
@@ -108,45 +207,73 @@ class RecurringInvoiceService
                 $recurringInvoice->taxes()->delete();
             }
 
+            $recurringInvoice->occurrences()->delete();
             $recurringInvoice->delete();
         }
 
         return true;
     }
 
+    /**
+     * Generate every invoice the active schedules have fallen due for, each
+     * dated its scheduled day where the company is. The scheduled command runs
+     * this; see RecurrenceRunner for the locking and retry rules.
+     *
+     * @return int the invoices generated
+     */
+    public function generateDue(): int
+    {
+        return $this->runner->run(
+            RecurringInvoice::query(),
+            fn (RecurringInvoice $schedule, string $date, CarbonImmutable $at) => $this->createInvoiceFromRecurring($schedule, $date, $at),
+            fn (RecurringInvoice $schedule, Throwable $error) => $this->failed($schedule, $error),
+        );
+    }
+
+    /**
+     * Generate one invoice from a schedule now, dated today where the company
+     * is, if the schedule has started and has not reached its limit. A
+     * schedule at its limit is marked completed instead.
+     */
     public function generateInvoice(RecurringInvoice $recurringInvoice): void
     {
         if (Carbon::now()->lessThan($recurringInvoice->starts_at)) {
             return;
         }
 
-        if ($recurringInvoice->limit_by == 'DATE') {
-            $startDate = Carbon::today()->format('Y-m-d');
-            $endDate = $recurringInvoice->limit_date;
+        $today = Cadence::localDate(Carbon::now(), $recurringInvoice->scheduleTimeZone());
 
-            if ($endDate >= $startDate) {
-                $this->createInvoiceFromRecurring($recurringInvoice);
-                $recurringInvoice->updateNextInvoiceDate();
-            } else {
-                $recurringInvoice->markStatusAsCompleted();
-            }
-        } elseif ($recurringInvoice->limit_by == 'COUNT') {
-            $invoiceCount = Invoice::where('recurring_invoice_id', $recurringInvoice->id)->count();
+        if (RecurrenceRunner::limitReached($recurringInvoice, $today)) {
+            $recurringInvoice->markStatusAsCompleted();
 
-            if ($invoiceCount < $recurringInvoice->limit_count) {
-                $this->createInvoiceFromRecurring($recurringInvoice);
-                $recurringInvoice->updateNextInvoiceDate();
-            } else {
-                $recurringInvoice->markStatusAsCompleted();
-            }
-        } else {
-            $this->createInvoiceFromRecurring($recurringInvoice);
-            $recurringInvoice->updateNextInvoiceDate();
+            return;
         }
+
+        DB::transaction(function () use ($recurringInvoice, $today): void {
+            $this->createInvoiceFromRecurring($recurringInvoice, $today, CarbonImmutable::now());
+            $recurringInvoice->save();
+        });
     }
 
-    private function createInvoiceFromRecurring(RecurringInvoice $recurringInvoice): void
+    /**
+     * The invoice for one run, dated the given day, with its due date counted
+     * from that day, inside the runner's transaction.
+     *
+     * A run already logged for its moment is not made again. The template is
+     * checked first, so a customer or a required field that went away fails
+     * the run with a reason instead of writing an invoice. The run is logged,
+     * so it counts toward the limit even if its invoice is deleted later.
+     */
+    private function createInvoiceFromRecurring(RecurringInvoice $recurringInvoice, string $date, CarbonImmutable $at): void
     {
+        $scheduledAt = $at->setTimezone(config('app.timezone', 'UTC'))->format('Y-m-d H:i:s');
+
+        if ($recurringInvoice->occurrences()->where('scheduled_at', $scheduledAt)->exists()) {
+            return;
+        }
+
+        $customer = $this->checkTemplate($recurringInvoice);
+
         $serial = (new SerialNumberService)
             ->setModel(new Invoice)
             ->setCompany($recurringInvoice->company_id)
@@ -161,8 +288,8 @@ class RecurringInvoiceService
         }
 
         $newInvoice['creator_id'] = $recurringInvoice->creator_id;
-        $newInvoice['invoice_date'] = Carbon::today()->toDateString();
-        $newInvoice['due_date'] = Carbon::today()->addDays($days)->toDateString();
+        $newInvoice['invoice_date'] = $date;
+        $newInvoice['due_date'] = Carbon::parse($date)->addDays($days)->toDateString();
         $newInvoice['status'] = Invoice::STATUS_DRAFT;
         $newInvoice['company_id'] = $recurringInvoice->company_id;
         $newInvoice['paid_status'] = Invoice::STATUS_UNPAID;
@@ -173,7 +300,7 @@ class RecurringInvoiceService
         $newInvoice['tax'] = $recurringInvoice->tax;
         $newInvoice['total'] = $recurringInvoice->total;
         $newInvoice['customer_id'] = $recurringInvoice->customer_id;
-        $newInvoice['currency_id'] = Customer::find($recurringInvoice->customer_id)->currency_id;
+        $newInvoice['currency_id'] = $customer->currency_id;
         $newInvoice['template_name'] = $recurringInvoice->template_name;
         $newInvoice['due_amount'] = $recurringInvoice->total;
         $newInvoice['recurring_invoice_id'] = $recurringInvoice->id;
@@ -184,11 +311,11 @@ class RecurringInvoiceService
         $newInvoice['exchange_rate'] = $recurringInvoice->exchange_rate;
         $newInvoice['sales_tax_type'] = $recurringInvoice->sales_tax_type;
         $newInvoice['sales_tax_address_type'] = $recurringInvoice->sales_tax_address_type;
-        $newInvoice['base_due_amount'] = $recurringInvoice->exchange_rate * $recurringInvoice->due_amount;
-        $newInvoice['base_discount_val'] = $recurringInvoice->exchange_rate * $recurringInvoice->discount_val;
-        $newInvoice['base_sub_total'] = $recurringInvoice->exchange_rate * $recurringInvoice->sub_total;
-        $newInvoice['base_tax'] = $recurringInvoice->exchange_rate * $recurringInvoice->tax;
-        $newInvoice['base_total'] = $recurringInvoice->exchange_rate * $recurringInvoice->total;
+        $newInvoice['base_due_amount'] = MoneyConversion::toBaseMinor($newInvoice['due_amount'], $recurringInvoice->exchange_rate);
+        $newInvoice['base_discount_val'] = MoneyConversion::toBaseMinor($recurringInvoice->discount_val, $recurringInvoice->exchange_rate);
+        $newInvoice['base_sub_total'] = MoneyConversion::toBaseMinor($recurringInvoice->sub_total, $recurringInvoice->exchange_rate);
+        $newInvoice['base_tax'] = MoneyConversion::toBaseMinor($recurringInvoice->tax, $recurringInvoice->exchange_rate);
+        $newInvoice['base_total'] = MoneyConversion::toBaseMinor($recurringInvoice->total, $recurringInvoice->exchange_rate);
 
         // Stamped last: the visible number is rendered from a format that may
         // embed either of the two sequences.
@@ -199,7 +326,7 @@ class RecurringInvoiceService
         ];
 
         $invoice = Invoice::create($newInvoice);
-        $invoice->unique_hash = Hashids::connection(HashidConnection::Invoice->value)->encode($invoice->id);
+        $invoice->unique_hash = PublicToken::make();
         $invoice->save();
 
         $recurringInvoice->load('items.taxes');
@@ -219,53 +346,124 @@ class RecurringInvoiceService
             $this->customFieldValueWriter->attach($invoice, $customField);
         }
 
-        if ($recurringInvoice->send_automatically == true) {
-            $customer = $invoice->customer;
+        $recurringInvoice->occurrences()->create([
+            'company_id' => $recurringInvoice->company_id,
+            'scheduled_for' => $date,
+            'scheduled_at' => $scheduledAt,
+            'record_type' => $invoice->getMorphClass(),
+            'record_id' => $invoice->getKey(),
+        ]);
 
-            $data = [
-                'body' => CompanySetting::getSetting('invoice_mail_body', $recurringInvoice->company_id),
-                'from' => config('mail.from.address'),
-                'to' => $recurringInvoice->customer->email,
-                'subject' => trans('invoices')['new_invoice'],
-                'invoice' => $invoice->toArray(),
-                'customer' => $customer->toArray(),
-                'company' => Company::find($invoice->company_id),
-            ];
+        $recurringInvoice->last_error = null;
 
-            $this->invoiceService->send($invoice, $data);
+        // Sent once the invoice is committed, so a rolled-back run mails nothing.
+        if ($recurringInvoice->send_automatically) {
+            DB::afterCommit(fn () => $this->sendToCustomer($recurringInvoice, $invoice));
         }
-    }
 
-    private function createItems(RecurringInvoice $recurringInvoice, array $items): void
-    {
-        foreach ($items as $item) {
-            $item['company_id'] = $recurringInvoice->company_id;
-            $createdItem = $recurringInvoice->items()->create($item);
-            if (array_key_exists('taxes', $item) && $item['taxes']) {
-                foreach ($item['taxes'] as $tax) {
-                    if (empty($tax['tax_type_id'])) {
-                        continue;
-                    }
-
-                    $tax['company_id'] = $recurringInvoice->company_id;
-                    if (gettype($tax['amount']) !== 'NULL') {
-                        $createdItem->taxes()->create($tax);
-                    }
-                }
-            }
+        if ($recurringInvoice->notify_creator) {
+            DB::afterCommit(fn () => $this->notifier->generated($recurringInvoice, $invoice));
         }
     }
 
     /**
-     * Write the template's own tax rows, skipping the ones carrying no amount.
+     * Email a generated invoice to the customer. The invoice is already saved,
+     * so a mail server that is down does not fail the run: the invoice stays
+     * a draft and the schedule shows why.
      */
-    private function createTaxes(RecurringInvoice $recurringInvoice, array $taxes): void
+    private function sendToCustomer(RecurringInvoice $recurringInvoice, Invoice $invoice): void
     {
-        foreach ($taxes as $tax) {
-            if (gettype($tax['amount']) !== 'NULL') {
-                $tax['company_id'] = $recurringInvoice->company_id;
-                $recurringInvoice->taxes()->create($tax);
-            }
+        try {
+            $customer = $invoice->customer;
+
+            $this->invoiceService->send($invoice, [
+                'body' => CompanySetting::getSetting('invoice_mail_body', $recurringInvoice->company_id),
+                'from' => config('mail.from.address'),
+                'to' => $customer->email,
+                'subject' => trans('invoices')['new_invoice'],
+                'invoice' => $invoice->toArray(),
+                'customer' => $customer->toArray(),
+                'company' => Company::find($invoice->company_id),
+            ]);
+        } catch (Throwable $error) {
+            report($error);
+            $this->recordFailure($recurringInvoice, 'recurring_invoice_send_failed');
+        }
+    }
+
+    /**
+     * The customer a run bills, once the template is checked: the customer
+     * still belongs to the company, is still billed in the schedule's
+     * currency (schedules from before the currency was stored have none), and
+     * every required invoice custom field has an answer.
+     *
+     * @throws ValidationException
+     */
+    private function checkTemplate(RecurringInvoice $recurringInvoice): Customer
+    {
+        $customer = Customer::query()
+            ->where('company_id', $recurringInvoice->company_id)
+            ->find($recurringInvoice->customer_id);
+
+        $this->ensure($customer !== null, 'recurring_invoice_customer_missing');
+        $this->ensure(
+            $recurringInvoice->currency_id === null || (int) $customer->currency_id === (int) $recurringInvoice->currency_id,
+            'recurring_invoice_currency_changed',
+        );
+
+        $answered = $recurringInvoice->fields()->get()
+            ->filter(fn ($answer) => $answer->defaultAnswer !== null && $answer->defaultAnswer !== '')
+            ->pluck('custom_field_id')
+            ->all();
+
+        $unanswered = CustomField::query()
+            ->where('company_id', $recurringInvoice->company_id)
+            ->where('model_type', 'Invoice')
+            ->where('is_required', true)
+            ->whereNotIn('id', $answered)
+            ->exists();
+
+        $this->ensure(! $unanswered, 'recurring_invoice_custom_field_required');
+
+        return $customer;
+    }
+
+    /**
+     * Note why a run failed on the schedule; the runner tries again later.
+     */
+    private function failed(RecurringInvoice $recurringInvoice, Throwable $error): void
+    {
+        if (! $error instanceof ValidationException) {
+            report($error);
+        }
+
+        $this->recordFailure(
+            $recurringInvoice,
+            ScheduleState::failureReason($error, 'recurring_invoice_template_invalid', 'recurring_invoice_failed'),
+        );
+    }
+
+    /**
+     * Store a failure reason on the schedule, and tell its creator when the
+     * reason is new.
+     */
+    private function recordFailure(RecurringInvoice $recurringInvoice, string $reason): void
+    {
+        $previous = RecurringInvoice::query()->whereKey($recurringInvoice->id)->value('last_error');
+        RecurringInvoice::query()->whereKey($recurringInvoice->id)->update(['last_error' => $reason]);
+
+        if ($previous !== $reason && $recurringInvoice->notify_creator) {
+            $this->notifier->failed($recurringInvoice, $reason);
+        }
+    }
+
+    /**
+     * @throws ValidationException
+     */
+    private function ensure(bool $condition, string $code): void
+    {
+        if (! $condition) {
+            throw ValidationException::withMessages(['recurring_invoice' => [$code]]);
         }
     }
 }

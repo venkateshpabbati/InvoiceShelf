@@ -1,6 +1,7 @@
 <?php
 
 use App\Domains\Accounts\Models\Company;
+use App\Domains\Accounts\Models\CompanySetting;
 use App\Domains\Accounts\Models\User;
 use App\Domains\Receivables\Models\Payment;
 use App\Domains\Receivables\Models\PaymentAllocation;
@@ -659,15 +660,15 @@ test('create invoice with EUR currency', function () {
             'tax' => 4,
             'due_amount' => 84,
             'exchange_rate' => 86.403538,
-            'base_discount_val' => 1728.07,
-            'base_sub_total' => 8640.35,
-            'base_total' => 7257.90,
-            'base_tax' => 345.61,
-            'base_due_amount' => 7257.90,
+            'base_discount_val' => 1728,
+            'base_sub_total' => 8640,
+            'base_total' => 7258,
+            'base_tax' => 346,
+            'base_due_amount' => 7258,
             'taxes' => [Tax::factory()->raw([
                 'amount' => 4,
                 'percent' => 5,
-                'base_amount' => 345.61,
+                'base_amount' => 346,
             ])],
             'items' => [InvoiceItem::factory()->raw([
                 'discount_type' => 'fixed',
@@ -677,11 +678,11 @@ test('create invoice with EUR currency', function () {
                 'discount_val' => 0,
                 'tax' => 0,
                 'total' => 100,
-                'base_price' => 8640.35,
+                'base_price' => 8640,
                 'exchange_rate' => 86.403538,
                 'base_discount_val' => 0,
                 'base_tax' => 0,
-                'base_total' => 8640.35,
+                'base_total' => 8640,
             ])],
         ]);
 
@@ -727,16 +728,16 @@ test('update invoice with EUR currency', function () {
             'tax' => 4,
             'due_amount' => 84,
             'exchange_rate' => 86.403538,
-            'base_discount_val' => 1728.07,
-            'base_sub_total' => 8640.35,
-            'base_total' => 7257.897192,
-            'base_tax' => 345.614152,
-            'base_due_amount' => 7257.897192,
+            'base_discount_val' => 1728,
+            'base_sub_total' => 8640,
+            'base_total' => 7258,
+            'base_tax' => 346,
+            'base_due_amount' => 7258,
             'taxes' => [Tax::factory()->raw([
                 'tax_type_id' => $invoice->taxes[0]->tax_type_id,
                 'amount' => 4,
                 'percent' => 5,
-                'base_amount' => 345.614152,
+                'base_amount' => 346,
             ])],
             'items' => [InvoiceItem::factory()->raw([
                 'invoice_id' => $invoice->id,
@@ -747,11 +748,11 @@ test('update invoice with EUR currency', function () {
                 'discount_val' => 0,
                 'tax' => 0,
                 'total' => 100,
-                'base_price' => 8640.3538,
+                'base_price' => 8640,
                 'exchange_rate' => 86.403538,
                 'base_discount_val' => 0,
                 'base_tax' => 0,
-                'base_total' => 8640.3538,
+                'base_total' => 8640,
             ])],
         ]);
 
@@ -800,5 +801,29 @@ test('create invoice with tax included', function () {
 
     $this->assertDatabaseHas('invoices', [
         'tax_included' => true,
+    ]);
+});
+
+/**
+ * The fallback for a company with no tax-per-item setting used to be 'NO '
+ * with a trailing space, which matched neither YES nor NO, so the form showed
+ * no tax controls at all.
+ */
+test('an invoice for a company with no tax-per-item setting taxes the whole invoice', function () {
+    $companyId = User::find(1)->companies()->first()->id;
+    CompanySetting::where('company_id', $companyId)->where('option', 'tax_per_item')->delete();
+
+    $invoice = Invoice::factory()->raw([
+        'items' => [InvoiceItem::factory()->raw(['price' => 10000, 'quantity' => 1, 'discount_val' => 0, 'tax' => 0, 'taxes' => []])],
+        'taxes' => [],
+        'discount_val' => 0,
+        'tax_included' => false,
+    ]);
+
+    postJson('api/v1/invoices', $invoice)->assertOk();
+
+    $this->assertDatabaseHas('invoices', [
+        'invoice_number' => $invoice['invoice_number'],
+        'tax_per_item' => 'NO',
     ]);
 });

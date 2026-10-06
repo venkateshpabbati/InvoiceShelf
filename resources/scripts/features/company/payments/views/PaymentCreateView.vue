@@ -1,7 +1,8 @@
 <template>
   <BasePage class="relative payment-create">
-    <form @submit.prevent="submitPaymentData">
-      <BasePageHeader :title="pageTitle" class="mb-5">
+    <form class="flex flex-col gap-4 md:gap-5" @submit.prevent="submitPaymentData">
+      <!-- On phones Save moves to the bottom bar, still submitting this form -->
+      <BasePageHeader :help="$t('page_help.payments')" :title="pageTitle" phone-actions="bar">
         <BaseBreadcrumb>
           <BaseBreadcrumbItem :title="$t('general.home')" to="/admin/dashboard" />
           <BaseBreadcrumbItem :title="$t('payments.payment', 2)" to="/admin/payments" />
@@ -9,7 +10,7 @@
         </BaseBreadcrumb>
 
         <template #actions>
-          <BaseButton :loading="isSaving" :disabled="isSaving" variant="primary" type="submit" class="hidden sm:flex">
+          <BaseButton :loading="isSaving" :disabled="isSaving" :content-loading="isLoadingContent" variant="primary" type="submit">
             <template #left="slotProps">
               <BaseIcon v-if="!isSaving" name="ArrowDownOnSquareIcon" :class="slotProps.class" />
             </template>
@@ -18,7 +19,7 @@
         </template>
       </BasePageHeader>
 
-      <BaseCard>
+      <BaseCard container-class="p-4 md:p-5">
         <BaseInputGrid>
           <BaseInputGroup :label="$t('payments.date')" :content-loading="isLoadingContent" required>
             <BaseDatePicker v-model="paymentStore.currentPayment.payment_date" :content-loading="isLoadingContent" :calendar-button="true" calendar-button-icon="calendar" />
@@ -69,19 +70,28 @@
               searchable
             />
           </BaseInputGroup>
+
+          <!-- Custom fields join the form's own grid rather than forming a
+               band of their own; they are attributes like the rest. -->
+          <CustomFieldInput
+            v-for="field in customFields"
+            :key="field.id"
+            :custom-field-scope="customFieldValidationScope"
+            :field="field"
+          />
         </BaseInputGrid>
 
-        <section class="pt-6 mt-6 border-t border-line-default">
+        <section class="pt-5 mt-5 border-t border-line-light">
           <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
             <div>
-              <h2 class="text-base font-semibold text-heading">{{ $t('payments.allocations') }}</h2>
+              <h2 class="font-semibold text-section text-heading">{{ $t('payments.allocations') }}</h2>
               <p class="mt-1 text-sm text-muted">{{ $t('payments.allocations_description') }}</p>
             </div>
             <div class="flex gap-2">
-              <BaseButton type="button" size="sm" variant="primary-outline" :disabled="!invoiceList.length || !amount" @click="allocateOldestFirst">
+              <BaseButton type="button" size="sm" variant="primary-outline" :disabled="!eligibleInvoices.length || !amount" @click="allocateOldestFirst">
                 {{ $t('payments.allocate_oldest_first') }}
               </BaseButton>
-              <BaseButton type="button" size="sm" variant="primary-outline" :disabled="!paymentStore.currentPayment.customer_id" @click="addAllocation">
+              <BaseButton type="button" size="sm" variant="primary-outline" :disabled="!paymentStore.currentPayment.customer_id || !availableInvoices(0).length" @click="addAllocation">
                 <template #left="slotProps"><BaseIcon name="PlusIcon" :class="slotProps.class" /></template>
                 {{ $t('payments.add_allocation') }}
               </BaseButton>
@@ -92,8 +102,9 @@
             {{ $t('payments.select_customer_to_allocate') }}
           </div>
 
-          <div v-else-if="!paymentStore.currentPayment.allocations.length" class="p-4 text-sm rounded-lg bg-surface-secondary text-muted">
-            {{ $t('payments.no_allocations') }}
+          <!-- Nothing open to apply it to: say so rather than offer buttons that do nothing -->
+          <div v-else-if="!paymentStore.currentPayment.allocations.length" class="p-4 text-sm rounded-lg bg-surface-secondary text-muted" role="status">
+            {{ !isLoadingInvoices && !eligibleInvoices.length ? $t('payments.no_open_invoices') : $t('payments.no_allocations') }}
           </div>
 
           <div v-else class="space-y-3">
@@ -120,20 +131,15 @@
             </div>
           </div>
 
-          <div class="flex flex-wrap justify-end gap-x-8 gap-y-2 pt-4 mt-4 text-sm border-t border-line-default">
+          <div class="flex flex-wrap justify-end gap-x-8 gap-y-2 pt-4 mt-4 text-sm border-t border-line-light">
             <span class="text-muted">{{ $t('payments.allocated') }}: <BaseFormatMoney :amount="allocatedAmount" :currency="paymentStore.currentPayment.currency" /></span>
             <span :class="unallocatedAmount < 0 ? 'text-status-red' : 'text-heading'">{{ $t('payments.unapplied_credit') }}: <BaseFormatMoney :amount="Math.max(unallocatedAmount, 0)" :currency="paymentStore.currentPayment.currency" /></span>
           </div>
         </section>
 
-        <div class="relative mt-6">
-          <label class="mb-4 text-sm font-medium text-heading">{{ $t('estimates.notes') }}</label>
-          <BaseCustomInput v-model="paymentStore.currentPayment.notes" :content-loading="isLoadingContent" :fields="paymentFields" class="mt-1" />
-        </div>
-
-        <BaseButton :loading="isSaving" :content-loading="isLoadingContent" variant="primary" type="submit" class="flex justify-center w-full mt-4 sm:hidden">
-          {{ isEdit ? $t('payments.update_payment') : $t('payments.save_payment') }}
-        </BaseButton>
+        <BaseInputGroup :label="$t('estimates.notes')" class="mt-5">
+          <BaseCustomInput v-model="paymentStore.currentPayment.notes" :content-loading="isLoadingContent" :fields="paymentFields" />
+        </BaseInputGroup>
       </BaseCard>
     </form>
   </BasePage>
@@ -144,6 +150,8 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { usePaymentStore } from '../store'
+import CustomFieldInput from '@/scripts/features/shared/custom-fields/CustomFieldInput.vue'
+import { useCustomFields } from '@/scripts/features/shared/custom-fields/use-custom-fields'
 import { useCompanyStore } from '../../../../stores/company.store'
 import { useNotificationStore } from '../../../../stores/notification.store'
 import { handleApiError, getErrorTranslationKey } from '../../../../utils/error-handling'
@@ -155,6 +163,8 @@ import type { Invoice } from '../../../../types/domain/invoice'
 const route = useRoute()
 const router = useRouter()
 const { t } = useI18n()
+const customFieldValidationScope = 'customFields'
+
 const paymentStore = usePaymentStore()
 const exchangeRateStore = paymentStore as unknown as Record<string, unknown> & { showExchangeRate: boolean }
 const companyStore = useCompanyStore()
@@ -174,6 +184,13 @@ const allocatedAmount = computed(() => paymentStore.currentPayment.allocations.r
 const unallocatedAmount = computed(() => paymentStore.currentPayment.amount - allocatedAmount.value)
 const isLoadingContent = computed(() => paymentStore.isFetchingInitialData)
 const isEdit = computed(() => route.name === 'payments.edit')
+
+const customFields = useCustomFields({
+  store: paymentStore,
+  storeProp: 'currentPayment',
+  type: 'Payment',
+  isEdit: () => isEdit.value,
+})
 const pageTitle = computed(() => isEdit.value ? t('payments.edit_payment') : t('payments.new_payment'))
 
 paymentStore.resetCurrentPayment()
@@ -239,6 +256,9 @@ function availableInvoices(selectedInvoiceId: number): Invoice[] {
     .filter((invoice) => isEligibleInvoice(invoice) || invoice.id === selectedInvoiceId)
     .filter((invoice) => !chosenInvoiceIds.includes(invoice.id))
 }
+
+// Invoices this payment can still be applied to
+const eligibleInvoices = computed<Invoice[]>(() => invoiceList.value.filter(isEligibleInvoice))
 
 function isEligibleInvoice(invoice: Invoice): boolean {
   return invoice.type === 'INVOICE' && invoice.status !== 'DRAFT' && invoice.due_amount > 0

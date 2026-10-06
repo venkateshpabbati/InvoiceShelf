@@ -3,10 +3,11 @@
 namespace App\Domains\Sales\Mail;
 
 use App\Domains\Sales\Models\Invoice;
-use App\Facades\Hashids;
+use App\Platform\Mail\Application\OutgoingSender;
 use App\Platform\Mail\Models\EmailLog;
 use App\Platform\Persistence\ModelIdentityMap;
-use App\Support\Hashids\HashidConnection;
+use App\Support\PublicToken;
+use App\Support\Urls\CustomerUrl;
 use Illuminate\Bus\Queueable;
 use Illuminate\Mail\Mailable;
 use Illuminate\Queue\SerializesModels;
@@ -43,12 +44,12 @@ class SendCreditNoteMail extends Mailable
             'mailable_id' => $this->data['invoice']['id'],
         ]);
 
-        $log->token = Hashids::connection(HashidConnection::EmailLog->value)->encode($log->id);
+        $log->token = PublicToken::make();
         $log->save();
 
-        $this->data['url'] = route('invoice', ['email_log' => $log->token]);
+        $this->data['url'] = CustomerUrl::route('invoice', ['email_log' => $log->token]);
 
-        $mailContent = $this->from($this->data['from'], config('mail.from.name'))
+        $mailContent = OutgoingSender::apply($this, $this->data['from'], config('mail.from.name'))
             ->subject($this->data['subject'])
             ->markdown('emails.send.credit-note', ['data' => $this->data]);
 

@@ -16,8 +16,9 @@ import useVuelidate from '@vuelidate/core'
 import { useCustomerStore } from '../store'
 import { useGlobalStore } from '../../../../stores/global.store'
 import { useCompanyStore } from '../../../../stores/company.store'
-import CustomerCustomFields from '@/scripts/features/company/customers/components/CreateCustomFields.vue'
+import CustomFieldsSection from '@/scripts/features/shared/custom-fields/CustomFieldsSection.vue'
 import CopyInputField from '@/scripts/features/company/customers/components/CopyInputField.vue'
+import { customerBaseUrl } from '@/scripts/utils/documents'
 
 const customerStore = useCustomerStore()
 const globalStore = useGlobalStore()
@@ -31,8 +32,6 @@ const router = useRouter()
 const route = useRoute()
 
 const isFetchingInitialData = ref<boolean>(false)
-const isShowPassword = ref<boolean>(false)
-const isShowConfirmPassword = ref<boolean>(false)
 const isSaving = ref<boolean>(false)
 
 const isEdit = computed<boolean>(() => route.name === 'customers.edit')
@@ -44,10 +43,6 @@ const isLoadingContent = computed<boolean>(
 const pageTitle = computed<string>(() =>
   isEdit.value ? t('customers.edit_customer') : t('customers.new_customer')
 )
-
-const hasCustomFields = computed<boolean>(() => {
-  return customerStore.currentCustomer.customFields.length > 0
-})
 
 const rules = computed(() => ({
   currentCustomer: {
@@ -128,7 +123,7 @@ const rules = computed(() => ({
 }))
 
 const getCustomerPortalUrl = computed<string>(() => {
-  return `${window.location.origin}/${companyStore.selectedCompany?.slug}/customer/login`
+  return `${customerBaseUrl()}/${companyStore.selectedCompany?.slug}/customer/login`
 })
 
 const v$ = useVuelidate(rules, customerStore, {
@@ -165,8 +160,9 @@ async function submitCustomerData(): Promise<void> {
 
 <template>
   <BasePage>
-    <form @submit.prevent="submitCustomerData">
-      <BasePageHeader :title="pageTitle">
+    <form class="flex flex-col gap-4 md:gap-5" @submit.prevent="submitCustomerData">
+      <!-- On phones Save moves to the bottom bar, still submitting this form -->
+      <BasePageHeader :help="$t('page_help.customers')" :title="pageTitle" phone-actions="bar">
         <BaseBreadcrumb>
           <BaseBreadcrumbItem :title="$t('general.home')" to="dashboard" />
           <BaseBreadcrumbItem
@@ -177,27 +173,25 @@ async function submitCustomerData(): Promise<void> {
         </BaseBreadcrumb>
 
         <template #actions>
-          <div class="flex items-center justify-end">
-            <BaseButton type="submit" :loading="isSaving" :disabled="isSaving">
-              <template #left="slotProps">
-                <BaseIcon name="ArrowDownOnSquareIcon" :class="slotProps.class" />
-              </template>
-              {{
-                isEdit
-                  ? $t('customers.update_customer')
-                  : $t('customers.save_customer')
-              }}
-            </BaseButton>
-          </div>
+          <BaseButton type="submit" :loading="isSaving" :disabled="isSaving">
+            <template #left="slotProps">
+              <BaseIcon name="ArrowDownOnSquareIcon" :class="slotProps.class" />
+            </template>
+            {{
+              isEdit
+                ? $t('customers.update_customer')
+                : $t('customers.save_customer')
+            }}
+          </BaseButton>
         </template>
       </BasePageHeader>
 
-      <BaseCard class="mt-5">
+      <BaseCard container-class="p-4 md:p-5">
         <!-- Basic Info -->
         <div class="grid grid-cols-5 gap-4 mb-8">
-          <h6 class="col-span-5 text-lg font-semibold text-left lg:col-span-1">
+          <h2 class="col-span-5 font-semibold text-start text-section text-heading lg:col-span-1">
             {{ $t('customers.basic_info') }}
-          </h6>
+          </h2>
 
           <BaseInputGrid class="col-span-5 lg:col-span-4">
             <BaseInputGroup
@@ -336,9 +330,9 @@ async function submitCustomerData(): Promise<void> {
 
         <!-- Portal Access -->
         <div class="grid grid-cols-5 gap-4 mb-8">
-          <h6 class="col-span-5 text-lg font-semibold text-left lg:col-span-1">
+          <h2 class="col-span-5 font-semibold text-start text-section text-heading lg:col-span-1">
             {{ $t('customers.portal_access') }}
-          </h6>
+          </h2>
 
           <BaseInputGrid class="col-span-5 lg:col-span-4">
             <div class="md:col-span-2">
@@ -373,19 +367,12 @@ async function submitCustomerData(): Promise<void> {
               <BaseInput
                 v-model.trim="customerStore.currentCustomer.password"
                 :content-loading="isFetchingInitialData"
-                :type="isShowPassword ? 'text' : 'password'"
+                type="password"
+                revealable
                 name="password"
                 :invalid="v$.currentCustomer.password.$error"
                 @input="v$.currentCustomer.password.$touch()"
-              >
-                <template #right>
-                  <BaseIcon
-                    :name="isShowPassword ? 'EyeIcon' : 'EyeSlashIcon'"
-                    class="mr-1 text-muted cursor-pointer"
-                    @click="isShowPassword = !isShowPassword"
-                  />
-                </template>
-              </BaseInput>
+              />
             </BaseInputGroup>
 
             <BaseInputGroup
@@ -400,19 +387,12 @@ async function submitCustomerData(): Promise<void> {
               <BaseInput
                 v-model.trim="customerStore.currentCustomer.confirm_password"
                 :content-loading="isFetchingInitialData"
-                :type="isShowConfirmPassword ? 'text' : 'password'"
+                type="password"
+                revealable
                 name="confirm_password"
                 :invalid="v$.currentCustomer.confirm_password.$error"
                 @input="v$.currentCustomer.confirm_password.$touch()"
-              >
-                <template #right>
-                  <BaseIcon
-                    :name="isShowConfirmPassword ? 'EyeIcon' : 'EyeSlashIcon'"
-                    class="mr-1 text-muted cursor-pointer"
-                    @click="isShowConfirmPassword = !isShowConfirmPassword"
-                  />
-                </template>
-              </BaseInput>
+              />
             </BaseInputGroup>
           </BaseInputGrid>
         </div>
@@ -421,9 +401,9 @@ async function submitCustomerData(): Promise<void> {
 
         <!-- Billing Address -->
         <div class="grid grid-cols-5 gap-4 mb-8">
-          <h6 class="col-span-5 text-lg font-semibold text-left lg:col-span-1">
+          <h2 class="col-span-5 font-semibold text-start text-section text-heading lg:col-span-1">
             {{ $t('customers.billing_address') }}
-          </h6>
+          </h2>
 
           <BaseInputGrid
             v-if="customerStore.currentCustomer.billing"
@@ -526,7 +506,7 @@ async function submitCustomerData(): Promise<void> {
               <BaseInputGroup
                 :content-loading="isFetchingInitialData"
                 :label="$t('customers.phone')"
-                class="text-left"
+                class="text-start"
               >
                 <BaseInput
                   v-model.trim="customerStore.currentCustomer.billing.phone"
@@ -539,7 +519,7 @@ async function submitCustomerData(): Promise<void> {
               <BaseInputGroup
                 :label="$t('customers.zip_code')"
                 :content-loading="isFetchingInitialData"
-                class="mt-2 text-left"
+                class="mt-2 text-start"
               >
                 <BaseInput
                   v-model.trim="customerStore.currentCustomer.billing.zip"
@@ -582,9 +562,9 @@ async function submitCustomerData(): Promise<void> {
           v-if="customerStore.currentCustomer.shipping"
           class="grid grid-cols-5 gap-4 mb-8"
         >
-          <h6 class="col-span-5 text-lg font-semibold text-left lg:col-span-1">
+          <h2 class="col-span-5 font-semibold text-start text-section text-heading lg:col-span-1">
             {{ $t('customers.shipping_address') }}
-          </h6>
+          </h2>
 
           <BaseInputGrid class="col-span-5 lg:col-span-4">
             <BaseInputGroup
@@ -682,7 +662,7 @@ async function submitCustomerData(): Promise<void> {
               <BaseInputGroup
                 :content-loading="isFetchingInitialData"
                 :label="$t('customers.phone')"
-                class="text-left"
+                class="text-start"
               >
                 <BaseInput
                   v-model.trim="customerStore.currentCustomer.shipping.phone"
@@ -695,7 +675,7 @@ async function submitCustomerData(): Promise<void> {
               <BaseInputGroup
                 :label="$t('customers.zip_code')"
                 :content-loading="isFetchingInitialData"
-                class="mt-2 text-left"
+                class="mt-2 text-start"
               >
                 <BaseInput
                   v-model.trim="customerStore.currentCustomer.shipping.zip"
@@ -708,31 +688,14 @@ async function submitCustomerData(): Promise<void> {
           </BaseInputGrid>
         </div>
 
-        <BaseDivider
-          v-if="hasCustomFields"
-          class="mb-5 md:mb-8"
+        <CustomFieldsSection
+          type="Customer"
+          :store="customerStore"
+          store-prop="currentCustomer"
+          :is-edit="isEdit"
+          :is-loading="isLoadingContent"
+          :scope="customFieldValidationScope"
         />
-
-        <!-- Customer Custom Fields -->
-        <div class="grid grid-cols-5 gap-2 mb-8">
-          <h6
-            v-if="hasCustomFields"
-            class="col-span-5 text-lg font-semibold text-left lg:col-span-1"
-          >
-            {{ $t('settings.custom_fields.title') }}
-          </h6>
-
-          <div class="col-span-5 lg:col-span-4">
-            <CustomerCustomFields
-              type="Customer"
-              :store="customerStore"
-              store-prop="currentCustomer"
-              :is-edit="isEdit"
-              :is-loading="isLoadingContent"
-              :custom-field-scope="customFieldValidationScope"
-            />
-          </div>
-        </div>
       </BaseCard>
     </form>
   </BasePage>

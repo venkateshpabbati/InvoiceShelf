@@ -2,6 +2,7 @@
 
 namespace App\Domains\Accounts\Policies;
 
+use App\Domains\Accounts\Models\RolePreset;
 use App\Domains\Accounts\Models\User;
 use Illuminate\Auth\Access\HandlesAuthorization;
 use Silber\Bouncer\Database\Role;
@@ -9,11 +10,13 @@ use Silber\Bouncer\Database\Role;
 /**
  * Who may work with per-company roles.
  *
- * One question answers all seven entries: does the actor own the company named
- * in the `company` header? There is no second half here. Where a role is
- * handed in it is never looked at, so the role's own scope plays no part in
- * the decision — confining a role to its company is left to the scoping that
- * Bouncer applies while the query runs, not to this class.
+ * Every entry asks whether the actor owns the company named in the `company`
+ * header, and where a role is handed in, whether that role belongs to the
+ * same company. Bouncer's query scoping does not cover route binding, so a
+ * role of another company would otherwise resolve here.
+ *
+ * A company's copy of a role preset (the `owner` role included) belongs to the
+ * super administrator: it can be read and assigned, never changed or removed.
  */
 class RolePolicy
 {
@@ -28,11 +31,11 @@ class RolePolicy
     }
 
     /**
-     * Reading one role. The role itself is not examined.
+     * Reading one role.
      */
     public function view(User $user, Role $role): bool
     {
-        return $user->isOwner();
+        return $user->isOwner() && $this->inActiveCompany($role);
     }
 
     /**
@@ -48,7 +51,7 @@ class RolePolicy
      */
     public function update(User $user, Role $role): bool
     {
-        return $user->isOwner();
+        return $this->mayChange($user, $role);
     }
 
     /**
@@ -57,7 +60,7 @@ class RolePolicy
      */
     public function delete(User $user, Role $role): bool
     {
-        return $user->isOwner();
+        return $this->mayChange($user, $role);
     }
 
     /**
@@ -65,7 +68,7 @@ class RolePolicy
      */
     public function restore(User $user, Role $role): bool
     {
-        return $user->isOwner();
+        return $this->mayChange($user, $role);
     }
 
     /**
@@ -73,6 +76,18 @@ class RolePolicy
      */
     public function forceDelete(User $user, Role $role): bool
     {
-        return $user->isOwner();
+        return $this->mayChange($user, $role);
+    }
+
+    private function mayChange(User $user, Role $role): bool
+    {
+        return $user->isOwner()
+            && $this->inActiveCompany($role)
+            && RolePreset::keyFromRoleName($role->name) === null;
+    }
+
+    private function inActiveCompany(Role $role): bool
+    {
+        return (int) $role->scope === (int) request()->header('company');
     }
 }

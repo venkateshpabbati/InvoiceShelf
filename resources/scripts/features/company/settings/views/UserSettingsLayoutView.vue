@@ -31,6 +31,16 @@ const menuItems = computed<MenuItem[]>(() => [
     link: '/admin/account-settings/security',
     icon: 'LockClosedIcon',
   },
+  {
+    title: t('devices.title'),
+    link: '/admin/account-settings/devices',
+    icon: 'DevicePhoneMobileIcon',
+  },
+  {
+    title: t('mcp.connected_apps.title'),
+    link: '/admin/account-settings/connected-apps',
+    icon: 'SparklesIcon',
+  },
 ])
 
 watchEffect(() => {

@@ -32,6 +32,9 @@ export interface NormalizedApiError {
  * Known error message to translation key map.
  */
 const ERROR_TRANSLATION_MAP: Record<string, string> = {
+  'demo_mode': 'demo.blocked',
+  'managed_mode': 'managed.blocked',
+  'This is turned off in the demo.': 'demo.blocked',
   'These credentials do not match our records.': 'errors.login_invalid_credentials',
   'The provided credentials are incorrect.': 'errors.login_invalid_credentials',
   'invalid_key': 'errors.invalid_provider_key',
@@ -41,6 +44,8 @@ const ERROR_TRANSLATION_MAP: Record<string, string> = {
   'payments_attached': 'settings.payment_modes.payments_attached',
   'expenses_attached': 'settings.payment_modes.expenses_attached',
   'role_attached_to_users': 'settings.roles.already_in_use',
+  'role_preset_in_use': 'settings.role_presets.in_use',
+  'role_preset_locked': 'settings.role_presets.locked',
   'items_attached': 'settings.customization.items.already_in_use',
   'payment_attached_message': 'invoices.payment_attached_message',
   'The email has already been taken.': 'validation.email_already_taken',
@@ -103,6 +108,7 @@ const ERROR_TRANSLATION_MAP: Record<string, string> = {
   'module_runtime_missing': 'modules.runtime_missing',
   'request_limit_met': 'errors.request_limit_met',
   'address_incomplete': 'errors.address_incomplete',
+  'recurrence_frequency_invalid': 'errors.recurrence_frequency_invalid',
   'invalid_address': 'errors.invalid_address',
   'Email could not be sent to this email address.': 'errors.email_could_not_be_sent',
 }
@@ -199,5 +205,13 @@ export function extractValidationErrors(err: unknown): Record<string, string[]> 
  * @returns The translation key if known, or null if not mapped
  */
 export function getErrorTranslationKey(errorMessage: string): string | null {
-  return ERROR_TRANSLATION_MAP[errorMessage] ?? null
+  if (ERROR_TRANSLATION_MAP[errorMessage]) {
+    return ERROR_TRANSLATION_MAP[errorMessage]
+  }
+
+  // Purchasing and recurring invoices send codes that name their own key
+  // under `errors`.
+  return /^(purchase|recurring_invoice)_[a-z_]+$/.test(errorMessage)
+    ? `errors.${errorMessage}`
+    : null
 }

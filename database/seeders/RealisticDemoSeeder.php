@@ -28,8 +28,8 @@ use App\Domains\Sales\Models\InvoiceItem;
 use App\Domains\Sales\Models\RecurringInvoice;
 use App\Domains\Taxation\Models\Tax;
 use App\Domains\Taxation\Models\TaxType;
-use App\Facades\Hashids;
-use App\Support\Hashids\HashidConnection;
+use App\Platform\Operations\Demo\DemoMode;
+use App\Support\PublicToken;
 use Carbon\Carbon;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Artisan;
@@ -198,8 +198,10 @@ class RealisticDemoSeeder extends Seeder
         $user = User::where('email', 'demo@invoiceshelf.com')->first();
 
         if ($user === null) {
-            $this->info('Demo user missing; running DemoSeeder first…');
-            Artisan::call('db:seed', ['--class' => 'DemoSeeder', '--force' => true]);
+            // The public demo has no Faker to run DemoSeeder's factories with.
+            $seeder = DemoMode::enabled() ? PublicDemoSeeder::class : 'DemoSeeder';
+            $this->info("Demo user missing; running {$seeder} first…");
+            Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);
             $user = User::where('email', 'demo@invoiceshelf.com')->firstOrFail();
         }
 
@@ -218,11 +220,10 @@ class RealisticDemoSeeder extends Seeder
         $this->unitId = $unit->id;
 
         // Override the company's default currency to match the USD id we just
-        // resolved. DemoSeeder hardcodes `'currency' => 1`, but since migration
-        // 2025_08_18 inserts Algerian Dinar (DZD, symbol "DA") via firstOrCreate()
-        // BEFORE CurrenciesTableSeeder runs, currency id 1 in a fresh install is
-        // Algerian Dinar, not USD. Without this override the company's display
-        // currency shows "DA" even though all our seeded records are priced in USD.
+        // resolved. Currency ids are not stable across installations -- an
+        // upgraded 2.x database can have the Algerian Dinar at id 1 -- and
+        // without this the company would display "DA" while every record it
+        // holds is priced in USD.
         CompanySetting::setSettings(
             ['currency' => (string) $this->currencyId],
             $this->companyId,
@@ -498,7 +499,6 @@ class RealisticDemoSeeder extends Seeder
             'currency_id' => $this->currencyId,
             'customer_id' => $customer->id,
             'company_id' => $this->companyId,
-            'user_id' => $this->user->id,
             'creator_id' => $this->user->id,
             'sent' => $status !== Invoice::STATUS_DRAFT,
             'viewed' => in_array($status, [Invoice::STATUS_VIEWED, Invoice::STATUS_COMPLETED], true),
@@ -519,7 +519,7 @@ class RealisticDemoSeeder extends Seeder
 
         $invoice->sequence_number = $serial->nextSequenceNumber;
         $invoice->customer_sequence_number = $serial->nextCustomerSequenceNumber;
-        $invoice->unique_hash = Hashids::connection(HashidConnection::Invoice->value)->encode($invoice->id);
+        $invoice->unique_hash = PublicToken::make();
         $invoice->created_at = $invoiceDate;
         $invoice->updated_at = $invoiceDate;
         $invoice->save();
@@ -578,7 +578,6 @@ class RealisticDemoSeeder extends Seeder
             'amount' => $amount,
             'base_amount' => $amount,
             'exchange_rate' => 1,
-            'user_id' => $this->user->id,
             'creator_id' => $this->user->id,
             'customer_id' => $invoice->customer_id,
             'payment_method_id' => $this->paymentMethodId,
@@ -596,7 +595,7 @@ class RealisticDemoSeeder extends Seeder
 
         $payment->sequence_number = $serial->nextSequenceNumber;
         $payment->customer_sequence_number = $serial->nextCustomerSequenceNumber;
-        $payment->unique_hash = Hashids::connection(HashidConnection::Payment->value)->encode($payment->id);
+        $payment->unique_hash = PublicToken::make();
         $payment->created_at = $paymentDate;
         $payment->updated_at = $paymentDate;
         Payment::withoutEvents(fn () => $payment->save());
@@ -678,7 +677,6 @@ class RealisticDemoSeeder extends Seeder
             'currency_id' => $this->currencyId,
             'customer_id' => $customer->id,
             'company_id' => $this->companyId,
-            'user_id' => $this->user->id,
             'creator_id' => $this->user->id,
             'notes' => null,
         ]);
@@ -696,7 +694,7 @@ class RealisticDemoSeeder extends Seeder
 
         $estimate->sequence_number = $serial->nextSequenceNumber;
         $estimate->customer_sequence_number = $serial->nextCustomerSequenceNumber;
-        $estimate->unique_hash = Hashids::connection(HashidConnection::Estimate->value)->encode($estimate->id);
+        $estimate->unique_hash = PublicToken::make();
         $estimate->created_at = $estimateDate;
         $estimate->updated_at = $estimateDate;
         $estimate->save();
@@ -821,7 +819,7 @@ class RealisticDemoSeeder extends Seeder
             CustomField::create($field + [
                 'label' => $field['name'],
                 'model_type' => 'Customer',
-                'slug' => clean_slug('Customer', $field['name']),
+                'slug' => clean_slug('Customer', $field['name'], $this->companyId),
                 'is_required' => false,
                 'order' => $order + 1,
                 'company_id' => $this->companyId,

@@ -2,7 +2,6 @@
 
 namespace App\Domains\Metadata\Http\Resources\CustomerPortal;
 
-use App\Domains\Accounts\Http\Resources\CustomerPortal\CompanyResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -41,6 +40,8 @@ class CustomFieldResource extends JsonResource
             'slug' => $field->slug,
             'label' => $field->label,
             'model_type' => $field->model_type,
+            'placement' => $field->placement,
+            'validation' => $field->validation,
             'type' => $field->type,
             'placeholder' => $field->placeholder,
             'options' => $field->options,
@@ -55,10 +56,6 @@ class CustomFieldResource extends JsonResource
             'order' => $field->order,
             'company_id' => $field->company_id,
             'default_answer' => $field->default_answer,
-            'company' => $this->when(
-                $field->company()->exists(),
-                fn () => new CompanyResource($field->company)
-            ),
         ];
     }
 }

@@ -7,24 +7,23 @@ import { useModalStore } from '@/scripts/stores/modal.store'
 import { useNotificationStore } from '@/scripts/stores/notification.store'
 import { roleService } from '@/scripts/api/services/role.service'
 import type { CreateRolePayload } from '@/scripts/api/services/role.service'
-import type { Ability } from '@/scripts/types/domain/role'
+import AbilityMatrix from '@/scripts/features/shared/roles/AbilityMatrix.vue'
+import type { AbilityDefinition } from '@/scripts/features/shared/roles/abilities'
 
-interface AbilityItem {
-  name: string
-  ability: string
-  disabled: boolean
-  depends_on?: string[]
-  model?: string
-}
-
-interface AbilitiesList {
-  [group: string]: AbilityItem[]
-}
-
+/**
+ * Creates, edits or (for a role preset, which the super administrator owns)
+ * only shows a company role. The modal data is the role id to edit, or
+ * `{ id, readonly: true }` to show one.
+ */
 interface RoleForm {
   id: number | null
   name: string
-  abilities: AbilityItem[]
+  abilities: string[]
+}
+
+interface ViewRoleData {
+  id: number
+  readonly?: boolean
 }
 
 const modalStore = useModalStore()
@@ -34,14 +33,14 @@ const { t } = useI18n()
 const isSaving = ref<boolean>(false)
 const isFetchingInitialData = ref<boolean>(false)
 const isEdit = ref<boolean>(false)
+const readonly = ref<boolean>(false)
+const catalogue = ref<AbilityDefinition[]>([])
 
 const currentRole = ref<RoleForm>({
   id: null,
   name: '',
   abilities: [],
 })
-
-const abilitiesList = ref<AbilitiesList>({})
 
 const modalActive = computed<boolean>(
   () => modalStore.active && modalStore.componentName === 'RolesModal'
@@ -69,60 +68,22 @@ async function setInitialData(): Promise<void> {
   isFetchingInitialData.value = true
 
   const abilitiesRes = await roleService.getAbilities()
-  if (abilitiesRes.abilities) {
-    const grouped: AbilitiesList = {}
-    abilitiesRes.abilities.forEach((a: Record<string, unknown>) => {
-      // Extract model name from PHP class path (e.g., "App\Models\Customer" → "Customer")
-      const modelPath = (a.model as string) ?? ''
-      const modelName = modelPath
-        ? modelPath.substring(modelPath.lastIndexOf('\\') + 1)
-        : 'Common'
+  catalogue.value = (abilitiesRes.abilities ?? []) as unknown as AbilityDefinition[]
 
-      if (!grouped[modelName]) grouped[modelName] = []
-      grouped[modelName].push({
-        name: a.name as string,
-        ability: a.ability as string,
-        disabled: false,
-        depends_on: (a.depends_on as string[]) ?? [],
-      } as AbilityItem)
-    })
-    abilitiesList.value = grouped
-  }
+  const data = modalStore.data as number | ViewRoleData | null | undefined
+  const id = typeof data === 'number' ? data : (data?.id ?? null)
+  readonly.value = typeof data === 'object' && data !== null && data.readonly === true
 
-  if (modalStore.data && typeof modalStore.data === 'number') {
-    isEdit.value = true
-    const response = await roleService.get(modalStore.data)
+  if (id) {
+    isEdit.value = !readonly.value
+    const response = await roleService.get(id)
     if (response.data) {
       currentRole.value = {
         id: response.data.id,
-        name: response.data.name,
-        abilities: [],
+        // A preset's copy is named preset:{key}; it is shown by its title.
+        name: response.data.preset ? (response.data.title ?? response.data.name) : response.data.name,
+        abilities: (response.data.abilities ?? []).map((ability) => ability.name),
       }
-
-      // Match role's abilities with the full ability objects from abilitiesList
-      const roleAbilities = (response.data.abilities ?? []) as Array<Record<string, unknown>>
-      roleAbilities.forEach((ra) => {
-        Object.keys(abilitiesList.value).forEach((group) => {
-          abilitiesList.value[group].forEach((_p) => {
-            if (_p.ability === ra.name) {
-              currentRole.value.abilities.push(_p)
-            }
-          })
-        })
-      })
-
-      // Set disabled state for dependent abilities
-      currentRole.value.abilities.forEach((ab) => {
-        ab.depends_on?.forEach((_d) => {
-          Object.keys(abilitiesList.value).forEach((group) => {
-            abilitiesList.value[group].forEach((_a) => {
-              if (_d === _a.ability) {
-                _a.disabled = true
-              }
-            })
-          })
-        })
-      })
     }
   } else {
     isEdit.value = false
@@ -133,6 +94,8 @@ async function setInitialData(): Promise<void> {
 }
 
 async function submitRoleData(): Promise<void> {
+  if (readonly.value) return
+
   v$.value.$touch()
 
   if (v$.value.$invalid) {
@@ -143,9 +106,7 @@ async function submitRoleData(): Promise<void> {
   try {
     const payload: CreateRolePayload = {
       name: currentRole.value.name,
-      abilities: currentRole.value.abilities.map((a) => ({
-        ability: a.ability,
-      })),
+      abilities: currentRole.value.abilities.map((ability) => ({ ability })),
     }
 
     if (isEdit.value && currentRole.value.id) {
@@ -172,84 +133,12 @@ async function submitRoleData(): Promise<void> {
   }
 }
 
-function onUpdateAbility(currentAbility: AbilityItem): void {
-  const fd = currentRole.value.abilities.find(
-    (_abl) => _abl.ability === currentAbility.ability
-  )
-
-  if (!fd && currentAbility.depends_on?.length) {
-    enableAbilities(currentAbility)
-    return
-  }
-
-  currentAbility.depends_on?.forEach((_d) => {
-    Object.keys(abilitiesList.value).forEach((group) => {
-      abilitiesList.value[group].forEach((_a) => {
-        if (_d === _a.ability) {
-          _a.disabled = true
-          const found = currentRole.value.abilities.find(
-            (_af) => _af.ability === _d
-          )
-          if (!found) {
-            currentRole.value.abilities.push(_a)
-          }
-        }
-      })
-    })
-  })
-}
-
-function setSelectAll(checked: boolean): void {
-  const dependList: string[] = []
-  Object.keys(abilitiesList.value).forEach((group) => {
-    abilitiesList.value[group].forEach((_a) => {
-      if (_a.depends_on) {
-        dependList.push(..._a.depends_on)
-      }
-    })
-  })
-
-  Object.keys(abilitiesList.value).forEach((group) => {
-    abilitiesList.value[group].forEach((_a) => {
-      if (dependList.includes(_a.ability)) {
-        _a.disabled = checked
-      }
-      currentRole.value.abilities.push(_a)
-    })
-  })
-
-  if (!checked) {
-    currentRole.value.abilities = []
-  }
-}
-
-function enableAbilities(ability: AbilityItem): void {
-  ability.depends_on?.forEach((_d) => {
-    Object.keys(abilitiesList.value).forEach((group) => {
-      abilitiesList.value[group].forEach((_a) => {
-        const found = currentRole.value.abilities.find((_r) =>
-          _r.depends_on?.includes(_a.ability)
-        )
-        if (_d === _a.ability && !found) {
-          _a.disabled = false
-        }
-      })
-    })
-  })
-}
-
 function closeRolesModal(): void {
   modalStore.closeModal()
   setTimeout(() => {
     currentRole.value = { id: null, name: '', abilities: [] }
     isEdit.value = false
-
-    Object.keys(abilitiesList.value).forEach((group) => {
-      abilitiesList.value[group].forEach((_a) => {
-        _a.disabled = false
-      })
-    })
-
+    readonly.value = false
     v$.value.$reset()
   }, 300)
 }
@@ -258,32 +147,30 @@ function closeRolesModal(): void {
 <template>
   <BaseModal
     :show="modalActive"
+    closable
     @close="closeRolesModal"
     @open="setInitialData"
   >
     <template #header>
-      <div class="flex justify-between w-full">
-        {{ modalStore.title }}
-        <BaseIcon
-          name="XMarkIcon"
-          class="w-6 h-6 text-muted cursor-pointer"
-          @click="closeRolesModal"
-        />
-      </div>
+      {{ modalStore.title }}
     </template>
 
     <form @submit.prevent="submitRoleData">
       <div class="px-4 md:px-8 py-4 md:py-6">
+        <p v-if="readonly" class="mb-3 text-sm text-muted">
+          {{ $t('settings.roles.preset_hint') }}
+        </p>
         <BaseInputGroup
           :label="$t('settings.roles.name')"
           class="mt-3"
           :error="v$.name.$error && v$.name.$errors[0].$message"
-          required
+          :required="!readonly"
           :content-loading="isFetchingInitialData"
         >
           <BaseInput
             v-model="currentRole.name"
             :invalid="v$.name.$error"
+            :disabled="readonly"
             type="text"
             :content-loading="isFetchingInitialData"
             @input="v$.name.$touch()"
@@ -291,83 +178,27 @@ function closeRolesModal(): void {
         </BaseInputGroup>
       </div>
 
-      <div class="flex justify-between">
-        <h6
-          class="text-sm not-italic font-medium text-heading px-4 md:px-8 py-1.5"
-        >
-          {{ $t('settings.roles.permission', 2) }}
-          <span class="text-sm text-red-500"> *</span>
-        </h6>
-        <div
-          class="text-sm not-italic font-medium text-subtle px-4 md:px-8 py-1.5"
-        >
-          <a
-            class="cursor-pointer text-primary-400"
-            @click="setSelectAll(true)"
-          >
-            {{ $t('settings.roles.select_all') }}
-          </a>
-          /
-          <a
-            class="cursor-pointer text-primary-400"
-            @click="setSelectAll(false)"
-          >
-            {{ $t('settings.roles.none') }}
-          </a>
-        </div>
-      </div>
-
-      <div class="border-t border-line-default py-3">
-        <div
-          class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 px-8 sm:px-8"
-        >
-          <div
-            v-for="(abilityGroup, gIndex) in abilitiesList"
-            :key="gIndex"
-            class="flex flex-col space-y-1"
-          >
-            <p
-              class="text-sm text-muted border-b border-line-default pb-1 mb-2"
-            >
-              {{ gIndex }}
-            </p>
-            <div
-              v-for="(ability, index) in abilityGroup"
-              :key="index"
-              class="flex"
-            >
-              <BaseCheckbox
-                v-model="currentRole.abilities"
-                :set-initial-value="true"
-                variant="primary"
-                :disabled="ability.disabled"
-                :label="ability.name"
-                :value="ability"
-                @update:model-value="onUpdateAbility(ability)"
-              />
-            </div>
-          </div>
-          <span
-            v-if="v$.abilities.$error"
-            class="block mt-0.5 text-sm text-red-500"
-          >
-            {{ v$.abilities.$errors[0].$message }}
-          </span>
-        </div>
-      </div>
+      <AbilityMatrix
+        v-model="currentRole.abilities"
+        :abilities="catalogue"
+        :readonly="readonly"
+        :error="v$.abilities.$error ? String(v$.abilities.$errors[0].$message) : null"
+      />
 
       <div
         class="z-0 flex justify-end p-4 border-t border-solid border-line-default"
       >
         <BaseButton
-          class="mr-3 text-sm"
+          class="text-sm"
+          :class="{ 'me-3': !readonly }"
           variant="primary-outline"
           type="button"
           @click="closeRolesModal"
         >
-          {{ $t('general.cancel') }}
+          {{ readonly ? $t('general.close') : $t('general.cancel') }}
         </BaseButton>
         <BaseButton
+          v-if="!readonly"
           :loading="isSaving"
           :disabled="isSaving"
           variant="primary"

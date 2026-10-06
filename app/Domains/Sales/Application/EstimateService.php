@@ -12,12 +12,12 @@ use App\Domains\Sales\Contracts\EstimateEmailSender;
 use App\Domains\Sales\Contracts\EstimatePdfDataProvider;
 use App\Domains\Sales\Models\Estimate;
 use App\Domains\Sales\Models\Invoice;
-use App\Facades\Hashids;
 use App\Platform\Mail\Contracts\MailConfigurator;
 use App\Platform\Pdf\Facades\Pdf;
 use App\Platform\Pdf\Rendering\PdfMetadata;
 use App\Platform\Pdf\Rendering\PdfTemplateUtils;
-use App\Support\Hashids\HashidConnection;
+use App\Support\MoneyConversion;
+use App\Support\PublicToken;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\View;
@@ -44,7 +44,7 @@ class EstimateService implements EstimatePdfDataProvider
         ?iterable $customFields = null,
     ): Estimate {
         $estimate = Estimate::create($attributes);
-        $estimate->unique_hash = Hashids::connection(HashidConnection::Estimate->value)->encode($estimate->id);
+        $estimate->unique_hash = PublicToken::make();
         $serial = (new SerialNumberService)
             ->setCompany($estimate->company_id)
             ->setCustomer($estimate->customer_id)
@@ -180,7 +180,26 @@ class EstimateService implements EstimatePdfDataProvider
 
         $company = Company::find($estimate->company_id);
         $language = CompanySetting::getSetting('language', $company->id);
-        $customFields = CustomField::query()->where('model_type', 'Item')->get();
+        // Scoped to this document's company: the definitions become column
+        // headers on the rendered page, so an unscoped lookup would print one
+        // tenant's field labels on another's documents. Not whereCompany(),
+        // which reads the request header and so is wrong for a portal
+        // download or a queued mail job.
+        $customFields = CustomField::query()
+            ->where('company_id', $estimate->company_id)
+            ->where('model_type', 'Item')
+            ->wherePrinted()
+            ->get();
+
+        // Document-level definitions the author asked to have printed. They
+        // render in the details block beside the number and the dates, which
+        // is where a custom date belongs (#237).
+        $documentFields = CustomField::query()
+            ->where('company_id', $estimate->company_id)
+            ->where('model_type', 'Estimate')
+            ->wherePrinted()
+            ->orderBy('order')
+            ->get();
 
         App::setLocale($language);
 
@@ -190,6 +209,7 @@ class EstimateService implements EstimatePdfDataProvider
         View::share([
             'estimate' => $estimate,
             'customFields' => $customFields,
+            'documentFields' => $documentFields,
             'logo' => $logo ?? null,
             'company_address' => $estimate->getCompanyAddress(),
             'shipping_address' => $estimate->getCustomerShippingAddress(),
@@ -262,19 +282,19 @@ class EstimateService implements EstimatePdfDataProvider
             'tax' => $estimate->tax,
             'notes' => $estimate->notes,
             'exchange_rate' => $exchangeRate,
-            'base_total' => $estimate->total * $exchangeRate,
-            'base_discount_val' => $estimate->discount_val * $exchangeRate,
-            'base_sub_total' => $estimate->sub_total * $exchangeRate,
-            'base_tax' => $estimate->tax * $exchangeRate,
-            'base_due_amount' => $estimate->total * $exchangeRate,
+            'base_total' => MoneyConversion::toBaseMinor($estimate->total, $exchangeRate),
+            'base_discount_val' => MoneyConversion::toBaseMinor($estimate->discount_val, $exchangeRate),
+            'base_sub_total' => MoneyConversion::toBaseMinor($estimate->sub_total, $exchangeRate),
+            'base_tax' => MoneyConversion::toBaseMinor($estimate->tax, $exchangeRate),
+            'base_due_amount' => MoneyConversion::toBaseMinor($estimate->total, $exchangeRate),
             ...$estimate->only(['currency_id', 'sales_tax_type', 'sales_tax_address_type']),
         ]);
 
-        $newEstimate->unique_hash = Hashids::connection(HashidConnection::Estimate->value)->encode($newEstimate->id);
+        $newEstimate->unique_hash = PublicToken::make();
         $newEstimate->save();
 
         $estimate->load('items.taxes');
-        $this->documentItemService->createItems($newEstimate, $estimate->items->toArray());
+        $this->documentItemService->createItems($newEstimate, $this->documentItemService->itemsForCopy($estimate));
 
         if ($estimate->taxes) {
             $this->documentItemService->createTaxes($newEstimate, $estimate->taxes->toArray());
@@ -353,17 +373,18 @@ class EstimateService implements EstimatePdfDataProvider
             'paid_status' => Invoice::STATUS_UNPAID,
             'due_amount' => $estimate->total,
             'exchange_rate' => $exchangeRate,
-            'base_discount_val' => $estimate->discount_val * $exchangeRate,
-            'base_sub_total' => $estimate->sub_total * $exchangeRate,
-            'base_total' => $estimate->total * $exchangeRate,
-            'base_tax' => $estimate->tax * $exchangeRate,
+            'base_discount_val' => MoneyConversion::toBaseMinor($estimate->discount_val, $exchangeRate),
+            'base_sub_total' => MoneyConversion::toBaseMinor($estimate->sub_total, $exchangeRate),
+            'base_total' => MoneyConversion::toBaseMinor($estimate->total, $exchangeRate),
+            'base_due_amount' => MoneyConversion::toBaseMinor($estimate->total, $exchangeRate),
+            'base_tax' => MoneyConversion::toBaseMinor($estimate->tax, $exchangeRate),
             ...$carriedOver,
         ]);
 
-        $invoice->unique_hash = Hashids::connection(HashidConnection::Invoice->value)->encode($invoice->id);
+        $invoice->unique_hash = PublicToken::make();
         $invoice->save();
 
-        $this->documentItemService->createItems($invoice, $estimate->items->toArray());
+        $this->documentItemService->createItems($invoice, $this->documentItemService->itemsForCopy($estimate));
 
         if ($estimate->taxes) {
             $this->documentItemService->createTaxes($invoice, $estimate->taxes->toArray());

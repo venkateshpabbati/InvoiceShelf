@@ -32,7 +32,7 @@ use Spatie\MediaLibrary\InteractsWithMedia;
  * A receipt stands on its own: it records what arrived, in the contact's
  * currency, and how much that was worth in the company's books. Which
  * documents it settles is a separate, replaceable list of slices held in
- * `payment_allocations`, so nothing here points at an invoice. Whatever is
+ * `customer_payment_allocations`, so nothing here points at an invoice. Whatever is
  * left unallocated is the contact's credit.
  *
  * Saving one queues a fresh rendering of its receipt PDF, and the shareable
@@ -45,7 +45,7 @@ class Payment extends Model implements HasMedia
     use HasFactory;
     use InteractsWithMedia;
 
-    protected $table = 'payments';
+    protected $table = 'customer_payments';
 
     /**
      * Everything but the primary key may be mass assigned.
@@ -109,6 +109,15 @@ class Payment extends Model implements HasMedia
         static::updated(function ($receipt) {
             self::queueRender($receipt, true);
         });
+
+        // HasCustomFields registers its clean-up from its own booted(), which
+        // a class declaring this method replaces outright rather than adds to.
+        // Repeated here so a deleted receipt does not leave its answers behind.
+        static::deleting(function ($receipt) {
+            if ($receipt->fields()->exists()) {
+                $receipt->fields()->delete();
+            }
+        });
     }
 
     /*
@@ -164,7 +173,7 @@ class Payment extends Model implements HasMedia
      */
     public function invoices(): BelongsToMany
     {
-        return $this->belongsToMany(Invoice::class, 'payment_allocations', 'payment_id', 'invoice_id')
+        return $this->belongsToMany(Invoice::class, 'customer_payment_allocations', 'payment_id', 'invoice_id')
             ->withPivot(['amount', 'base_amount'])
             ->withTimestamps();
     }

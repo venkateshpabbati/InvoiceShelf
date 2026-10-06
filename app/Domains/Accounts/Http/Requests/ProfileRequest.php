@@ -2,10 +2,12 @@
 
 namespace App\Domains\Accounts\Http\Requests;
 
+use App\Domains\Metadata\Http\Requests\Concerns\ValidatesCustomFields;
 use App\Rules\IdnEmail;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Validator;
 
 /**
  * Validates the signed-in account editing its own profile.
@@ -18,6 +20,8 @@ use Illuminate\Validation\Rule;
  */
 class ProfileRequest extends FormRequest
 {
+    use ValidatesCustomFields;
+
     /**
      * Everyone signed in may edit their own profile; there is no target to
      * weigh up, so the gate is open.
@@ -40,6 +44,25 @@ class ProfileRequest extends FormRequest
                 new IdnEmail,
                 Rule::unique('users')->ignore(Auth::id(), 'id'),
             ],
+            ...$this->customFieldRules(),
         ];
+    }
+
+    public function withValidator(Validator $validator): void
+    {
+        $this->validateCustomFieldAnswers($validator);
+    }
+
+    /**
+     * The columns written to the account.
+     *
+     * The answers arrive alongside them and are persisted separately, so they
+     * are taken out here rather than left for the model to ignore.
+     *
+     * @return array<string, mixed>
+     */
+    public function getProfilePayload(): array
+    {
+        return $this->withoutCustomFields($this->validated());
     }
 }

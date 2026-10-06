@@ -8,6 +8,7 @@ use App\Domains\Accounts\Models\Company;
 use App\Domains\Accounts\Models\CompanyInvitation;
 use App\Domains\Accounts\Models\CompanySetting;
 use App\Domains\Accounts\Models\ImpersonationLog;
+use App\Domains\Accounts\Models\RolePreset;
 use App\Domains\Accounts\Models\User;
 use App\Domains\Accounts\Models\UserSetting;
 use App\Domains\Catalog\Models\Item;
@@ -21,8 +22,18 @@ use App\Domains\Metadata\Models\Note;
 use App\Domains\Money\Models\Currency;
 use App\Domains\Money\Models\ExchangeRateLog;
 use App\Domains\Money\Models\ExchangeRateProvider;
+use App\Domains\Purchases\Models\Bill;
+use App\Domains\Purchases\Models\BillItem;
 use App\Domains\Purchases\Models\Expense;
 use App\Domains\Purchases\Models\ExpenseCategory;
+use App\Domains\Purchases\Models\RecurringCost;
+use App\Domains\Purchases\Models\Supplier;
+use App\Domains\Purchases\Models\SupplierCredit;
+use App\Domains\Purchases\Models\SupplierCreditAllocation;
+use App\Domains\Purchases\Models\SupplierCreditItem;
+use App\Domains\Purchases\Models\SupplierPayment;
+use App\Domains\Purchases\Models\SupplierPaymentAllocation;
+use App\Domains\Purchases\Models\SupplierRefund;
 use App\Domains\Receivables\Models\Payment;
 use App\Domains\Receivables\Models\PaymentAllocation;
 use App\Domains\Receivables\Models\PaymentMethod;
@@ -35,10 +46,13 @@ use App\Domains\Sales\Models\RecurringInvoice;
 use App\Domains\Taxation\Models\Tax;
 use App\Domains\Taxation\Models\TaxType;
 use App\Platform\Mail\Models\EmailLog;
+use App\Platform\Mcp\Models\McpActivity;
+use App\Platform\Mcp\Models\McpConnection;
 use App\Platform\Modules\Models\MarketplaceCredential;
 use App\Platform\Modules\Models\MarketplaceOperation;
 use App\Platform\Modules\Models\Module;
 use App\Platform\Operations\Models\Setting;
+use App\Platform\Recurrence\Models\RecurrenceOccurrence;
 use App\Platform\Storage\Models\FileDisk;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\Relation;
@@ -59,7 +73,7 @@ final class ModelIdentityMap
 
     public const INVOICE_ALIAS = 'invoice';
 
-    public const PAYMENT_ALIAS = 'payment';
+    public const PAYMENT_ALIAS = 'customer_payment';
 
     /**
      * @return array<string, class-string<Model>>
@@ -90,12 +104,26 @@ final class ModelIdentityMap
             'item' => Item::class,
             'marketplace_credential' => MarketplaceCredential::class,
             'marketplace_operation' => MarketplaceOperation::class,
+            'mcp_activity' => McpActivity::class,
+            'mcp_connection' => McpConnection::class,
             'module' => Module::class,
             'note' => Note::class,
             self::PAYMENT_ALIAS => Payment::class,
-            'payment_allocation' => PaymentAllocation::class,
+            'customer_payment_allocation' => PaymentAllocation::class,
+            'supplier' => Supplier::class,
+            'bill' => Bill::class,
+            'supplier_credit' => SupplierCredit::class,
+            'supplier_payment' => SupplierPayment::class,
+            'supplier_refund' => SupplierRefund::class,
+            'recurring_cost' => RecurringCost::class,
+            'recurrence_occurrence' => RecurrenceOccurrence::class,
+            'bill_item' => BillItem::class,
+            'supplier_credit_item' => SupplierCreditItem::class,
+            'supplier_payment_allocation' => SupplierPaymentAllocation::class,
+            'supplier_credit_allocation' => SupplierCreditAllocation::class,
             'payment_method' => PaymentMethod::class,
             'recurring_invoice' => RecurringInvoice::class,
+            'role_preset' => RolePreset::class,
             'setting' => Setting::class,
             'tax' => Tax::class,
             'tax_type' => TaxType::class,

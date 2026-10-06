@@ -16,14 +16,16 @@ use Silber\Bouncer\BouncerFacade;
  * account is to hold inside that company, displacing whatever it held there
  * before.
  *
- * Handing out a role means moving Bouncer's scope onto the company first. The
- * scope is left wherever the last company in the list put it; nothing here puts
- * it back. Kept as it stands.
+ * Roles are handed out inside each company's own Bouncer scope, which is put
+ * back afterwards, so this works the same from a company request and from the
+ * super administrator's, which has none. Leaving a company takes the role held
+ * there with it.
  */
 class MemberService
 {
     public function __construct(
         private readonly MemberReferencesCleaner $memberReferencesCleaner,
+        private readonly AccessRevoker $accessRevoker,
     ) {}
 
     /**
@@ -54,20 +56,38 @@ class MemberService
     /**
      * Overwrite an account and re-point it at the listed companies.
      *
-     * Memberships are replaced wholesale, so an edit that omits a company both
-     * detaches the account from it and leaves the roles it held there behind —
-     * the role sync below only visits companies still on the list.
+     * Only memberships in the companies the caller manages are replaced: one of
+     * those left off the list is detached, and the roles held there are left
+     * behind, since the role sync below only visits companies still on the
+     * list. Memberships in any other company stay as they are.
      *
      * @param  array<string, mixed>  $attributes
      * @param  iterable<int, array{id: int, role: string}>  $companies
+     * @param  array<int, int>  $managedCompanyIds
      */
-    public function update(User $user, array $attributes, iterable $companies): User
+    public function update(User $user, array $attributes, iterable $companies, array $managedCompanyIds): User
     {
         $user->update($attributes);
 
         $memberships = collect($companies);
 
-        $user->companies()->sync($memberships->pluck('id'));
+        $elsewhere = $user->companies()
+            ->whereNotIn('companies.id', $managedCompanyIds)
+            ->pluck('companies.id');
+
+        $changes = $user->companies()->sync($elsewhere->merge($memberships->pluck('id'))->unique()->values());
+
+        // Access granted to outside clients inside a company the account just
+        // left ends with the membership.
+        foreach ($changes['detached'] as $companyId) {
+            $this->accessRevoker->revokeCompany($user->id, (int) $companyId);
+
+            // Or an invitation back into the company would restore the old
+            // role next to the new one.
+            BouncerFacade::scope()->onceTo((int) $companyId, function () use ($user): void {
+                BouncerFacade::sync($user)->roles([]);
+            });
+        }
 
         $this->grantRoles($user, $memberships);
 
@@ -96,6 +116,8 @@ class MemberService
 
             $this->memberReferencesCleaner->clear($member);
 
+            $this->accessRevoker->revokeUser($member->id);
+
             if ($member->settings()->exists()) {
                 $member->settings()->delete();
             }
@@ -115,9 +137,11 @@ class MemberService
     private function grantRoles(User $member, Collection $memberships): void
     {
         foreach ($memberships as $membership) {
-            BouncerFacade::scope()->to($membership['id']);
-
-            BouncerFacade::sync($member)->roles([$membership['role']]);
+            BouncerFacade::scope()->onceTo((int) $membership['id'], function () use ($member, $membership): void {
+                BouncerFacade::sync($member)->roles([$membership['role']]);
+            });
         }
+
+        BouncerFacade::refresh();
     }
 }

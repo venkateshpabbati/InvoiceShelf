@@ -68,13 +68,47 @@ Every major model has a `company_id` foreign key. The `CompanyMiddleware` sets t
 ### Roles
 - **`super admin`** — global platform admin (unscoped, manages all companies).
 - **`owner`** — company-level admin (scoped to a company via Bouncer, full access to that company).
+- **Role presets** (`role_presets`, `RolePresetService`): roles the super admin defines once (Administration API `super-admin/role-presets`); every company holds a copy named `owner` (the Owner preset, always the whole catalogue) or `preset:{key}`, which it can assign but not edit or delete (`RolePolicy`). Shipped: Owner, Manager, Read only. `CompanyService::setupRoles` gives a new company its copies; editing a preset rewrites every copy; `roles:sync-presets` repairs them. **A new ability reaches the shipped presets through its `presets` entry in `config/abilities.php` (e.g. `'presets' => ['manager', 'read-only']`), never through a migration:** after every `migrate` run, `RolePresetService::applyDefaults` offers each preset the tagged abilities it has not been offered before, and the Owner preset every new ability in the catalogue (tracked in `role_presets.applied_defaults`), so one the super admin removed stays removed and a deleted preset is not recreated. Don't call `syncAll()` from a migration to hand out a new ability. `roles:apply-preset-defaults` runs it by hand.
+- Every write of a role's grants goes through `RoleGrantWriter`, which runs in the role's own Bouncer scope. A super-admin request has no scope, and Bouncer writes made without one land in the wrong company. Note `BouncerFacade::allow($role)->to('name')` with one argument is lazy and runs when the conductor is destroyed, possibly after a scope set with `onceTo()` has ended; pass the model (or `null`) as a second argument inside a scoped closure.
 
 ### Authentication
-Three guards: `web` (session), `api` (Sanctum tokens for `/api/v1/`), `customer` (session for customer portal). API routes use `auth:sanctum` middleware; customer portal uses `auth:customer`.
+Four guards: `web` (session), `api` (Sanctum tokens for `/api/v1/`), `customer` (session for customer portal) and `oauth` (Passport access tokens, used by the MCP server). API routes use `auth:sanctum` middleware; customer portal uses `auth:customer`.
 
 ### Routing
 - **API**: All endpoints under `/api/v1/` in `routes/api.php`, grouped with `auth:sanctum`, `company`, and `bouncer` middleware
 - **Web**: `routes/web.php` serves PDF endpoints, auth pages, and catch-all SPA routes (`/admin/{vue?}`, `/{company:slug}/customer/{vue?}`)
+
+### Thin clients
+
+Mobile clients run the same SPA from their own origin and never load `resources/views/app.blade.php`, so the public `GET /api/v1/app/client-manifest` stands in for it: version, `min_client_version`, `app_url`, page title, login branding, module script/style URLs, and the demo and managed flags. **It mirrors the Blade shell; change one and change the other** (`ClientManifestService`).
+
+`config/cors.php` is published and covers `api/*`, the module asset routes, `reports/*` and the PDF routes. `allowed_origins` comes from `CORS_ALLOWED_ORIGINS`, defaulting to `capacitor://` and `https://` on `invoiceshelf.client.hostname`. That hostname must never be `localhost` or `127.0.0.1`: Sanctum's default stateful list holds both, so such an origin gets session and CSRF middleware and every bearer POST fails with 419.
+
+Tokens never expire, so `GET /api/v1/auth/tokens` and `DELETE /api/v1/auth/tokens/{id}` (the caller's own only) exist to cut off a lost device, and `POST /api/v1/auth/login` is throttled to 10 a minute.
+
+**Mobile shell** (`mobile/`, see `mobile/README.md`): a Capacitor 7 project wrapping the `pnpm build:client` output in `mobile/www`. `android/` and `ios/` are committed; `www/` and `node_modules/` are not. Native pieces live in `resources/scripts/platform/capacitor.ts` alone (device name, share-sheet file delivery, in-app browser, receipt camera, the biometric check behind the app lock in `resources/scripts/client/lock.ts`), behind a dynamic import gated on `__INVOICESHELF_CLIENT__` so no Capacitor code reaches the web bundle. The plugins are declared twice, in `mobile/package.json` and the root one, and must stay at the same versions. `capacitor.config.ts`'s `server.hostname` is the contract above: never `localhost`.
+
+### Managed mode
+
+`INVOICESHELF_MANAGED=true` (`config/managed.php`, deliberately outside `config('invoiceshelf')`, which the SPA bootstrap sends to every member) marks an install that a hosting provider runs for its owner, such as InvoiceShelf Cloud. The provider owns storage and backups, PDF rendering and fonts, the server's mail transport and module installation: those route files are mounted behind the `not-managed` middleware (`EnsureNotManaged`, a 403 with `error: managed_mode`), and the SPA hides their settings entries and the marketplace pairing and install controls (`utils/managed.ts`, fed by `window.managed` or the client manifest). Company mail settings, module enable/disable and everything else stay open. **Modules on a managed install:** marketplace pairing stays with the provider (`not-managed`), but installing, updating and uninstalling official modules (the marketplace serves only official, signed releases) is open when the provider mounts a writable `Modules/` directory (`modules-installable`, `ManagedMode::modulesInstallable()`, told to the SPA as `managed.modules_installable`); without one, the provider handles modules. Paid modules are not offered there yet. On every start the Docker image runs `modules:reconcile` before migrations, which disables modules whose `module.json` compatibility no longer fits this version, and module installs clear the opcode cache (`OpcacheReset`), since the cloud image never re-reads PHP files. Mail on a managed install: the environment sets the server transport and stored global settings are ignored; a company may bring its own SMTP server only (public host, port 465, 587 or 2525, TLS or SSL, no DSN); and mail sent through the provider's transport goes out from `mail.from` with the user's chosen address as Reply-To (`OutgoingSender`, used by every mailable that takes a user-chosen sender). A new provider-owned surface goes behind `not-managed` and is listed in `ManagedModeTest`.
+
+### Powered by and the source link
+
+The "Powered by" line under the sign-in pages, public documents and document emails comes from one place: `App\Support\PoweredBy`, fed by `config('invoiceshelf.powered_by')` (`INVOICESHELF_POWERED_BY`, `_NAME`, `_URL`), rendered by `emails/partials/powered-by.blade.php` and `components/layout/PoweredBy.vue` and handed to the SPA as `window.powered_by` (Blade shell) or the manifest's `branding.powered_by`. A host may rename or hide it. The account menus (staff and customer portal) always link to the running version's source (`INVOICESHELF_SOURCE_URL`, `{version}` filled in), which AGPL section 13 asks of a hosted install. Never hard-code either.
+
+### Customer portal host
+
+`CUSTOMER_PORTAL_URL` (with `CUSTOMER_PORTAL_HOSTS` for extra hosts) gives the customer portal a host of its own, such as `portal.example.com`. Every link sent to a customer is built with `App\Support\Urls\CustomerUrl` (`route()`, `to()`), never `route()` or `url()` directly, so it lands there. The global `RestrictPortalHost` middleware lets a portal host serve only the portal pages and API, public documents, PDFs by hash, module assets and `/up`, answering 404 to everything else, and moves customer pages opened on the app host to the portal host with a 301. The staff SPA reads the address as `window.customer_portal_url` (`customerBaseUrl()` in `utils/documents.ts`). Unset, or set to the app's own host, nothing changes.
+
+### MCP server
+
+`app/Platform/Mcp/` lets AI assistants (Claude, ChatGPT, Claude Code, Cursor) use the app over the Model Context Protocol at `/mcp`, built on `laravel/mcp` and Passport. It is off until a super admin switches it on (`php artisan mcp:enable`, or Administration → Settings → AI connections). The user guide is `docs/guide/ai-assistants.md` in the docs repo.
+
+- **Connections.** Clients register themselves (DCR) and sign in with OAuth 2.1 and PKCE. The consent screen (`OAuth/ConsentScreen`) binds each connection (`McpConnection`) to one user, one company and an access level, `read` or `write`. `BindMcpConnection` puts that company in the `company` header, so `whereCompany()`, Bouncer scoping and the policies work unchanged. A client never names a company.
+- **Tools** live in `Tools/{area}/*Tool.php` and extend `McpTool`. Each one declares all four annotations and the ability it needs (`ability()`). A tool that writes extends `McpWriteTool`, which hides it from read-only connections, limits a connection to 30 changes a minute, takes an `idempotency_key` when `creates()` is true, and logs every change in `mcp_activity`. Tools that delete or send email take a required `confirm` and do nothing without it (`RequiresConfirmation`). Sends are also limited per connection and per company (`SendsMail`). `ToolCatalogueTest` enforces all of this for every tool on the server.
+- **Writes use the app's own path.** A tool composes the payload the SPA would send (`SalesDocumentComposer`, `PaymentComposer`; the arithmetic is `App\Support\DocumentTaxes`, a port of the document forms), validates it with the domain's form request through `Support/DomainRequestValidator`, and stores it with the same service the controller uses. Never compute amounts in a tool, and never write a model directly.
+- **Reads** return presenters (`Presenters/*`) with explicit fields, never `toArray()`. Money is `{amount, currency, formatted}` with a major-unit decimal string. Company figures sum the `base_*` columns.
+- **Adding a tool:** a class in `Tools/`, listed in `Servers/InvoiceShelfServer::$tools`, and a test. Its name and description are what the model reads, so write them for someone who has never seen the app.
 
 ### Frontend
 - Vue 3 + TypeScript + Pinia + vue-router + Tailwind v4 (`@tailwindcss/vite`)
@@ -95,7 +129,8 @@ The styling system uses **Tailwind v4 with CSS custom properties as the source o
 - `primary-{50…950}` — brand color scale
 - `surface`, `surface-secondary`, `surface-tertiary`, `surface-muted` — background depth tiers
 - `heading`, `body`, `muted`, `subtle` — text emphasis tiers
-- `line-{light,default,strong}` — borders
+- `line-{light,default,strong}` — borders (`line-strong` is also the text field border)
+- `control-border` — checkbox and switch outlines, 3:1 against a modal's glass
 - `hover`, `hover-strong` — hover backgrounds
 - `header-from`, `header-to` — fixed header gradient stops (not dark-mode-aware)
 - `btn-primary`, `btn-primary-hover` — button colors (fixed, always bold)
@@ -112,11 +147,16 @@ After that the token is usable as `bg-X` / `text-X` / `border-X` in Vue template
 
 **Convention — never hardcode hex/rgb values in components.** Use the semantic tokens: `text-heading` not `text-gray-900`, `bg-surface` not `bg-white`, `border-line-default` not `border-gray-300`. Hardcoded values won't follow dark-mode flips and will diverge from the rest of the app over time. There are **no exceptions** in the project — even the auth pages (which sit outside the admin chrome) use the same `bg-surface` / `text-heading` / `border-line-default` vocabulary as `BaseCard`, just composed differently.
 
+**Form field borders.** Text fields (inputs, textareas, selects, the multiselect, the rich editor) get their border from the form base styles in `invoiceshelf.css`, or from the `field-border` class when the field is a button or a div. Don't give a field a border colour utility such as `border-line-strong`: Tailwind orders same-property utilities alphabetically, so it would outrank `border-danger` and hide the invalid state.
+
+**Accessibility.** The app targets WCAG 2.2 AA, and `pnpm lint` runs eslint-plugin-vuejs-accessibility. One known exception, decided on 2026-09-23: text field borders measure 1.5 to 2.3:1 against their background, below the 3:1 that SC 1.4.11 asks of a component's boundary, because 3:1 borders made forms look heavy. Fields are still identified by their labels and layout, focus turns the whole border indigo and an invalid field turns it red. Checkboxes and switches do meet 3:1. Revisit that decision before raising field borders to 3:1.
+
 ### Backend Patterns
 - **Authorization**: Silber/Bouncer with policies in `app/Policies/`. Controllers use `$this->authorize()`.
 - **Validation**: Form Request classes, never inline validation
 - **API responses**: Eloquent API Resources in `app/Http/Resources/`
 - **PDF generation**: Pluggable driver — `dompdf` (default, via `GeneratesPdfTrait`) or `gotenberg` (headless Chromium). Driver chosen per company through the **PDF Generation** admin settings page.
+- **Outbound hosts**: a setting that names a host the server connects to is checked by `App\Support\Net\PrivateNetworkGuard`, at save time (`PublicHttpUrl`, `PublicHost`) and again when the connection is made. Legitimate private hosts are exempted per feature in `config/network.php` (`GOTENBERG_ALLOWED_PRIVATE_HOST`, `MAIL_ALLOWED_PRIVATE_HOSTS`) through `PrivateNetworkGuard::isExempt($feature, $target)`: the operator names the hosts, never a boolean, never a settings toggle, and one feature's exemption never covers another.
 - **Email**: Mailable classes with `EmailLog` tracking. Mail driver is configurable globally and may be overridden per-company.
 - **File storage**: Spatie MediaLibrary backed by the **FileDisk** model — admins create named disk entries (local / S3 / Dropbox / DigitalOcean Spaces) and assign them to purposes (`media_storage`, `pdf_storage`, `backup_storage`) in **Admin → File Disks → Disk Assignments**. New uploads go to the assigned disk; existing files stay where they were and require `php artisan media:secure` to migrate.
 - **Serial numbers**: `SerialNumberService`
@@ -129,6 +169,8 @@ PDFs ship with bundled **Noto Sans** (Latin / Greek / Cyrillic) as the default f
 Two non-obvious constraints when extending the font system:
 1. **dompdf's PHP-Font-Lib does not parse variable fonts** (`fvar`/`gvar` tables). Any new package must source **static TTF** files — Google Fonts' main repo ships variable fonts and produces empty boxes. Reliable static-TTF sources used today: `openmaptiles/fonts` for non-CJK Noto scripts, `life888888/cjk-fonts-ttf` for the CJK packages, `google/fonts/ofl/sarabun` for Thai.
 2. **dompdf does not glyph-fall-back through the `font-family` chain** — it uses the *first* font for ALL characters. So locale-specific packages must be the **primary** font for that locale, not a fallback. Selection happens in `FontService::getFontFamilyForLocale()`. This is also why a Latin-locale company with a Hebrew customer name will still render boxes for the Hebrew text — solving that needs Gotenberg or a custom mid-render font-switching pass.
+
+Every downloadable file names a release or commit URL (never a branch) and a `sha256`; a download that does not match is refused, and a new package needs both. `pdf:fonts:install --all --path=<dir>` fetches packages ahead of time: an image that bakes them points `PDF_FONTS_PATH` at that directory (it must sit under the app directory, dompdf's chroot; `FontService` checks it before `storage/fonts/`) and sets `PDF_FONTS_DOWNLOAD=false`, which stops run-time and admin downloads.
 
 The bundled NotoSans is also surfaced as a `bundled: true` package entry (no download URL, files served from `resources/static/fonts/` instead of `storage/fonts/`) so it appears alongside the on-demand packages in the admin UI with a "Bundled" pill instead of an Install button.
 
@@ -197,6 +239,16 @@ Notes on the mechanics:
 - `.github/scripts/changelog-section.php <version>` prints what the updater will be
   sent, so you can check the notes locally before tagging.
 
+**The mobile apps ride the same button.** `mobile.yaml` also listens for
+`release: published`, so publishing the draft builds the Android AAB and APK
+(and, separately gated, the iOS archive) from that tag, attaches the APK to the
+release and uploads to the internal store tracks. Both its jobs are gated on the
+repository variable `MOBILE_RELEASES_ENABLED`, so until the signing secrets exist
+the whole workflow is a no-op rather than a failure on every release. The
+variables, the secrets and how to produce each one are a top-to-bottom checklist
+in the Releasing section of `mobile/README.md`; the version numbers come from the
+tag via `mobile/scripts/version-code.mjs` and are never edited by hand.
+
 ## CI Pipeline
 
-GitHub Actions (`check.yaml`): runs Pint style check, then runs Pest tests in parallel (`php artisan test --parallel`) on PHP 8.4 with Xdebug disabled (`coverage: none`). The test job does **not** build the frontend — the suite is API/JSON only and never renders the Vite blade, so no Node/Vite step is needed (release/docker workflows still build assets in their own jobs).
+GitHub Actions (`check.yaml`): runs Pint style check, then runs Pest tests in parallel (`php artisan test --parallel`) on PHP 8.4 with Xdebug disabled (`coverage: none`). The test job does **not** build the frontend — the suite is API/JSON only and never renders the Vite blade, so no Node/Vite step is needed (release/docker workflows still build assets in their own jobs). When `docker/production/` changes, and on every push to 3.x, it also builds the production image and runs `docker/production/readonly-smoke.sh` on it: read-only root, `INVOICESHELF_DOTENV=false` (no `.env`; the entrypoint refuses to start without `APP_KEY` in the environment), managed mode, headless install. Anything that writes outside `storage/` and `bootstrap/cache` at boot or per request fails it; run it locally with `docker build -f docker/production/Dockerfile -t invoiceshelf:local . && docker/production/readonly-smoke.sh invoiceshelf:local`.

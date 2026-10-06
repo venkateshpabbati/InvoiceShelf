@@ -25,8 +25,11 @@ it('lists currencies common-first, then the rest by name', function () {
     expect($codes->take(10)->values()->all())
         ->toBe(['USD', 'EUR', 'GBP', 'JPY', 'CAD', 'AUD', 'CHF', 'CNY', 'INR', 'BRL']);
 
+    // Case-insensitively: "CFP Franc" belongs beside "Central African Franc",
+    // not at the head of the C block where a byte comparison puts it.
     $restNames = collect(getJson('/api/v1/currencies')->json('data'))->skip(10)->pluck('name')->values();
-    expect($restNames->all())->toBe($restNames->sort()->values()->all());
+    expect($restNames->all())
+        ->toBe($restNames->sortBy(fn (string $name): string => mb_strtolower($name))->values()->all());
 });
 
 it('creates a provider after live validation and enforces the one-active-provider-per-currency rule', function () {
@@ -87,7 +90,7 @@ it('resolves rates live first, then from the log, then reports none', function (
         ->assertOk()->assertJsonPath('exchangeRate.0', '99.9');
 });
 
-it('gates the historical backfill and reproduces its defective arithmetic', function () {
+it('gates the historical backfill and converts original monetary amounts', function () {
     $usd = DB::table('currencies')->where('code', 'USD')->value('id');
     $customerId = postJson('/api/v1/customers', ['name' => 'Backfill Co', 'currency_id' => $usd])
         ->assertSuccessful()->json('data.id');
@@ -118,9 +121,26 @@ it('gates the historical backfill and reproduces its defective arithmetic', func
     expect((float) $row->exchange_rate)->toBe(2.0);
     expect((int) $row->base_sub_total)->toBe(2000);
     expect((int) $row->base_total)->toBe(2000);
-    // Defect, kept deliberately: base discount sourced from the sub-total.
-    expect((int) $row->base_discount_val)->toBe(2000);
+    // A zero discount remains zero instead of being copied from the subtotal.
+    expect((int) $row->base_discount_val)->toBe(0);
 
     expect(DB::table('company_settings')->where('company_id', $this->companyId)
         ->where('option', 'bulk_exchange_rate_configured')->value('value'))->toBe('YES');
+});
+
+it('lets only the owner run the exchange-rate backfill', function () {
+    DB::table('company_settings')->updateOrInsert(
+        ['company_id' => $this->companyId, 'option' => 'bulk_exchange_rate_configured'],
+        ['value' => 'NO'],
+    );
+    $member = User::factory()->create(['role' => 'user']);
+    $member->companies()->attach($this->companyId);
+    Sanctum::actingAs($member, ['*']);
+
+    postJson('/api/v1/currencies/bulk-update-exchange-rate', [
+        'currencies' => [['id' => 1, 'exchange_rate' => 2]],
+    ])->assertForbidden();
+
+    expect(DB::table('company_settings')->where('company_id', $this->companyId)
+        ->where('option', 'bulk_exchange_rate_configured')->value('value'))->toBe('NO');
 });

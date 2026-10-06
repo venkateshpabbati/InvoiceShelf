@@ -15,12 +15,34 @@ export interface CreateCustomFieldPayload {
   type: string
   placeholder?: string | null
   is_required?: boolean
-  options?: Array<{ name: string }> | string[] | null
+  options?: string[]
   order?: number | null
+  placement?: string
+  /** Bounds and an optional pattern an answer must satisfy. */
+  validation?: Record<string, unknown> | null
   default_answer?: string | null
 }
 
+/** One model a custom field can be attached to, as the catalogue serves it. */
+export interface CustomFieldModelOption {
+  value: string
+  label: string
+}
+
 export const customFieldService = {
+  /**
+   * The models a field can be attached to. Assembled on the server from the
+   * built-in list plus anything a module registered, so the editor does not
+   * hardcode it and cannot drift from what validation accepts.
+   */
+  async modelTypes(): Promise<CustomFieldModelOption[]> {
+    const { data } = await client.get(API.CONFIG, {
+      params: { key: 'custom_field_models' },
+    })
+
+    return data.custom_field_models ?? []
+  },
+
   async list(params?: CustomFieldListParams): Promise<ApiResponse<CustomField[]>> {
     const { data } = await client.get(API.CUSTOM_FIELDS, { params })
     return data

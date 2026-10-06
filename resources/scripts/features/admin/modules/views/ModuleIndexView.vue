@@ -7,10 +7,10 @@
       </BaseBreadcrumb>
     </BasePageHeader>
 
-    <BaseCard class="mt-6">
+    <BaseCard v-if="!managed" class="mt-6">
       <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h6 class="text-heading text-lg font-medium">Marketplace access</h6>
+          <h2 class="text-heading text-lg font-medium">Marketplace access</h2>
           <p class="mt-1 text-sm text-muted">
             Pair this InvoiceShelf instance with your marketplace account. The device credential stays encrypted on this server.
           </p>
@@ -34,7 +34,7 @@
     </BaseCard>
 
     <div class="mt-6">
-      <BaseTabGroup @change="setStatusFilter">
+      <BaseTabGroup v-if="!providerOnly" @change="setStatusFilter">
         <BaseTab :title="$t('general.all')" filter="" />
         <BaseTab :title="$t('modules.installed')" filter="INSTALLED" />
       </BaseTabGroup>
@@ -45,9 +45,9 @@
         <ModuleCard v-for="mod in filteredModules" :key="mod.slug" :data="mod" />
       </div>
       <div v-else class="mt-24">
-        <label class="flex items-center justify-center text-muted">
-          {{ activeTab === 'INSTALLED' ? $t('modules.no_modules_installed') : 'No marketplace modules are available yet.' }}
-        </label>
+        <p class="flex items-center justify-center text-muted" role="status">
+          {{ providerOnly || activeTab === 'INSTALLED' ? $t('modules.no_modules_installed') : $t('modules.no_marketplace_modules') }}
+        </p>
       </div>
     </div>
   </BasePage>
@@ -60,6 +60,7 @@ import ModuleCard from '../components/ModuleCard.vue'
 import type { MarketplacePairingCode } from '@/scripts/api/services/module.service'
 import type { Module } from '@/scripts/types/domain/module'
 import { useNotificationStore } from '@/scripts/stores/notification.store'
+import { isManaged, providerManagesModules } from '@/scripts/utils/managed'
 
 const moduleStore = useModuleStore()
 const notificationStore = useNotificationStore()
@@ -69,12 +70,18 @@ const isPairing = ref(false)
 const isPolling = ref(false)
 const pairingCode = ref<MarketplacePairingCode | null>(null)
 
-const filteredModules = computed<Module[]>(() => activeTab.value === 'INSTALLED'
+// On a managed install the provider pairs the install with the marketplace.
+// Where it also handles modules (no writable Modules directory), only what is
+// installed is listed.
+const managed = isManaged()
+const providerOnly = providerManagesModules()
+
+const filteredModules = computed<Module[]>(() => providerOnly || activeTab.value === 'INSTALLED'
   ? moduleStore.installedModules
   : moduleStore.modules)
 
 onMounted(async () => {
-  await Promise.all([moduleStore.fetchMarketplacePairing(), fetchModulesData()])
+  await Promise.all([managed ? Promise.resolve() : moduleStore.fetchMarketplacePairing(), fetchModulesData()])
 })
 
 async function fetchModulesData(): Promise<void> {

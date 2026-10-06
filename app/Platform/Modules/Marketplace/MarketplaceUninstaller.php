@@ -5,6 +5,7 @@ namespace App\Platform\Modules\Marketplace;
 use App\Platform\Modules\Contracts\ModuleSettingsStore;
 use App\Platform\Modules\Events\ModuleUninstalledEvent;
 use App\Platform\Modules\Models\Module as InstalledModule;
+use App\Platform\Modules\Runtime\OpcacheReset;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\ServiceProvider;
@@ -246,10 +247,11 @@ class MarketplaceUninstaller
 
     private function refreshRuntimeCaches(): void
     {
-        if (Artisan::call('optimize:clear --no-interaction') !== 0
-            || Artisan::call('queue:restart --no-interaction') !== 0) {
+        if (Artisan::call('optimize:clear') !== 0
+            || Artisan::call('queue:restart') !== 0) {
             throw new RuntimeException('Could not refresh module runtime caches.');
         }
+        OpcacheReset::afterCodeChange();
     }
 
     private function markFailed(InstalledModule $module, string $error, Throwable $exception): void

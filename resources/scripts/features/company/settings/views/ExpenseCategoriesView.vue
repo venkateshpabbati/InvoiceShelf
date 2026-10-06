@@ -3,6 +3,8 @@ import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useModalStore } from '../../../../stores/modal.store'
 import { expenseService } from '../../../../api/services/expense.service'
+import { useUserStore } from '@/scripts/stores/user.store'
+import { ABILITIES } from '@/scripts/config/abilities'
 import ExpenseCategoryDropdown from '@/scripts/features/company/settings/components/ExpenseCategoryDropdown.vue'
 import CategoryModal from '@/scripts/features/company/settings/components/CategoryModal.vue'
 
@@ -31,6 +33,12 @@ interface FetchResult {
 }
 
 const modalStore = useModalStore()
+const userStore = useUserStore()
+// Adding takes create or edit, changing edit; seeing the headings only view.
+const canEdit = computed<boolean>(() => userStore.hasAbilities(ABILITIES.EDIT_EXPENSE))
+const canAdd = computed<boolean>(
+  () => canEdit.value || userStore.hasAbilities(ABILITIES.CREATE_EXPENSE)
+)
 const { t } = useI18n()
 
 const table = ref<{ refresh: () => void } | null>(null)
@@ -51,7 +59,7 @@ const expenseCategoryColumns = computed<TableColumn[]>(() => [
   {
     key: 'actions',
     label: '',
-    tdClass: 'text-right text-sm font-medium',
+    tdClass: 'text-end text-sm font-medium',
     sortable: false,
   },
 ])
@@ -97,7 +105,7 @@ function refreshTable(): void {
     :title="$t('settings.expense_category.title')"
     :description="$t('settings.expense_category.description')"
   >
-    <template #action>
+    <template v-if="canAdd" #action>
       <BaseButton
         variant="primary-outline"
         type="button"
@@ -124,10 +132,30 @@ function refreshTable(): void {
 
       <template #cell-actions="{ row }">
         <ExpenseCategoryDropdown
+          v-if="canEdit"
           :row="row.data"
           :table="table"
           :load-data="refreshTable"
         />
+      </template>
+      <!-- Nothing here yet: say what goes here and offer to add the first -->
+      <template #empty>
+        <BaseEmptyPlaceholder
+          compact
+          art="category"
+          :ghost="3"
+          :title="$t('settings.expense_category.empty_title')"
+          :description="$t('settings.expense_category.empty_description')"
+        >
+          <template v-if="canAdd" #actions>
+            <BaseButton variant="primary-outline" @click="openCategoryModal">
+              <template #left="slotProps">
+                <BaseIcon name="PlusIcon" :class="slotProps.class" />
+              </template>
+              {{ $t('settings.expense_category.add_new_category') }}
+            </BaseButton>
+          </template>
+        </BaseEmptyPlaceholder>
       </template>
     </BaseTable>
   </BaseSettingCard>

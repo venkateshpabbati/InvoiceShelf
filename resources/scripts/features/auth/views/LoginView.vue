@@ -1,5 +1,5 @@
 <template>
-  <form id="loginForm" class="mt-12 text-left" @submit.prevent="onSubmit">
+  <form id="loginForm" class="mt-12 text-start" @submit.prevent="onSubmit">
     <BaseInputGroup
       :error="v$.email.$error && v$.email.$errors[0].$message"
       :label="$t('login.email')"
@@ -8,6 +8,7 @@
     >
       <BaseInput
         v-model="authStore.loginData.email"
+        autocomplete="username"
         :invalid="v$.email.$error"
         focus
         type="email"
@@ -24,26 +25,20 @@
     >
       <BaseInput
         v-model="authStore.loginData.password"
+        autocomplete="current-password"
         :invalid="v$.password.$error"
-        :type="inputType"
+        type="password"
+        revealable
         name="password"
         @input="v$.password.$touch()"
-      >
-        <template #right>
-          <BaseIcon
-            :name="isShowPassword ? 'EyeIcon' : 'EyeSlashIcon'"
-            class="mr-1 text-muted cursor-pointer"
-            @click="isShowPassword = !isShowPassword"
-          />
-        </template>
-      </BaseInput>
+      />
     </BaseInputGroup>
 
     <div class="mt-5 mb-8">
       <div class="mb-4">
         <router-link
           to="forgot-password"
-          class="text-sm text-primary-400 hover:text-body"
+          class="text-sm text-primary-600 hover:text-body"
         >
           {{ $t('login.forgot_password') }}
         </router-link>
@@ -53,10 +48,28 @@
     <BaseButton :loading="isLoading" type="submit" class="w-full justify-center">
       {{ $t('login.login') }}
     </BaseButton>
+
+    <div
+      v-if="demo"
+      role="note"
+      class="p-4 mt-8 text-sm border rounded-lg border-line-default bg-surface-secondary text-body"
+    >
+      <p class="font-medium text-heading">{{ $t('demo.login_title') }}</p>
+      <p class="mt-1">{{ $t('demo.login_note', { email: demo.email, password: demo.password }) }}</p>
+      <template v-if="demo.portal_path">
+        <a :href="demo.portal_path" class="inline-flex mt-3 font-medium text-primary-600 hover:underline">
+          {{ $t('demo.try_portal') }}
+        </a>
+        <p class="mt-1 text-muted">
+          {{ $t('demo.portal_note', { email: demo.portal_email, password: demo.portal_password }) }}
+        </p>
+      </template>
+    </div>
   </form>
 </template>
 
 <script setup lang="ts">
+import { demoState } from '@/scripts/utils/demo'
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { required, email, helpers } from '@vuelidate/validators'
@@ -77,7 +90,20 @@ const { t } = useI18n()
 const router = useRouter()
 const route = useRoute()
 const isLoading = ref<boolean>(false)
-const isShowPassword = ref<boolean>(false)
+
+// Server-rendered pages a sign-in may return to. Keep in step with
+// PostLoginRedirect::SERVER_PATHS (app/Domains/Accounts/Application).
+const SERVER_REDIRECT_PATHS = ['/oauth/authorize']
+
+function isServerRedirectPath(path: string): boolean {
+  if (path.includes('\\')) {
+    return false
+  }
+
+  return SERVER_REDIRECT_PATHS.some(
+    (prefix) => path === prefix || path.startsWith(`${prefix}?`)
+  )
+}
 
 const rules = {
   email: {
@@ -93,10 +119,6 @@ const v$ = useVuelidate(
   rules,
   computed(() => authStore.loginData)
 )
-
-const inputType = computed<string>(() => {
-  return isShowPassword.value ? 'text' : 'password'
-})
 
 async function onSubmit(): Promise<void> {
   v$.value.$touch()
@@ -121,6 +143,13 @@ async function onSubmit(): Promise<void> {
         ? nextRaw
         : '/admin/dashboard'
 
+    // Pages the server renders itself, such as the OAuth consent screen, are
+    // not SPA routes: load them with a full navigation.
+    if (isServerRedirectPath(safeNext)) {
+      window.location.assign(safeNext)
+      return
+    }
+
     router.push(safeNext)
 
     notificationStore.showNotification({
@@ -138,10 +167,12 @@ async function onSubmit(): Promise<void> {
   }
 }
 
+const demo = demoState()
+
 onMounted(() => {
-  if (window.demo_mode) {
-    authStore.loginData.email = 'demo@invoiceshelf.com'
-    authStore.loginData.password = 'demo'
+  if (demo) {
+    authStore.loginData.email = demo.email
+    authStore.loginData.password = demo.password
   }
 })
 </script>

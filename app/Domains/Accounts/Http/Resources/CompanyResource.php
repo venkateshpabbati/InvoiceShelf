@@ -3,6 +3,7 @@
 namespace App\Domains\Accounts\Http\Resources;
 
 use App\Domains\Contacts\Http\Resources\AddressResource;
+use App\Domains\Metadata\Http\Resources\CustomFieldValueResource;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 use Illuminate\Support\Facades\Auth;
@@ -12,9 +13,9 @@ use Illuminate\Support\Facades\DB;
  * A company as the admin API publishes it.
  *
  * Identity, branding and the public handle, plus the postal address when one is
- * on file and the owning account when the caller has already loaded it. Two
- * further fields describe authorization inside this company: the roles defined
- * in its scope, and the title of the role the signed-in account holds there.
+ * on file and the owning account when the caller has already loaded it, and
+ * the title of the role the signed-in account holds in this company. The
+ * company's roles are not included: the roles endpoint lists them.
  */
 class CompanyResource extends JsonResource
 {
@@ -45,8 +46,11 @@ class CompanyResource extends JsonResource
                 $company->relationLoaded('owner'),
                 fn () => new UserResource($company->owner)
             ),
-            'roles' => RoleResource::collection($company->roles),
             'user_role' => $this->assignedRoleTitle(),
+            'fields' => $this->when(
+                $this->fields()->exists(),
+                fn () => CustomFieldValueResource::collection($this->fields)
+            ),
         ];
     }
 

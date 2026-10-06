@@ -17,14 +17,35 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * whichever of the six typed columns the input type maps to, exactly the way
  * a record's own answer is, so a single mapping helper serves both.
  *
- * Two things are looser than they look. The record type is a free string:
- * nothing checks it against the handful of types the interface offers. And
- * the slug a template addresses the field by is stamped once, at creation,
- * and never recomputed, so renaming a field leaves every placeholder that
- * already names it working.
+ * One thing is looser than it looks: the slug a template addresses the field
+ * by is stamped once, at creation, and never recomputed, so renaming a field
+ * leaves every placeholder that already names it working.
  */
 class CustomField extends Model
 {
+    /** Answered and read in the interface, never printed. */
+    public const PLACEMENT_INTERNAL = 'internal';
+
+    /** Printed on the document the record belongs to. */
+    public const PLACEMENT_DOCUMENT = 'document';
+
+    /**
+     * How long an author's pattern may be.
+     *
+     * A cap rather than a safeguard against a slow expression: PCRE's
+     * backtrack limit already turns runaway matching into a failed match
+     * rather than a hung worker. This just keeps the column sane.
+     */
+    public const MAX_PATTERN_LENGTH = 255;
+
+    /**
+     * The one relative bound a date field may carry.
+     *
+     * Resolved against the owning company's zone, so a company thirteen
+     * hours ahead is not told the date it is living in is in the future.
+     */
+    public const BOUND_TODAY = 'today';
+
     protected $table = 'custom_fields';
 
     use HasFactory;
@@ -67,35 +88,20 @@ class CustomField extends Model
     {
         return [
             'options' => 'array',
+            'validation' => 'array',
         ];
     }
 
     /**
      * Reduce a time-of-day fallback to H:i:s.
      *
-     * An empty value never reaches the attribute bag -- not even as null --
-     * so clearing the time on a definition that already has one silently
-     * leaves the old time in place. A value the parser cannot read becomes
-     * midnight rather than an error.
+     * An empty value is written through as null so the fallback can be
+     * cleared, matching the answer model's copy of this mutator. A value the
+     * parser cannot read becomes midnight rather than an error.
      */
     public function setTimeAnswerAttribute(mixed $value): void
     {
-        if ($value) {
-            $this->attributes['time_answer'] = date('H:i:s', strtotime($value));
-        }
-    }
-
-    /**
-     * Encode the option list on the way in.
-     *
-     * A set mutator wins over the array cast, so this runs in its place and
-     * encodes whatever arrives: null is stored as the four characters "null",
-     * and a string that is already JSON is encoded a second time and reads
-     * back as a string rather than as the structure it spells.
-     */
-    public function setOptionsAttribute(mixed $value): void
-    {
-        $this->attributes['options'] = json_encode($value);
+        $this->attributes['time_answer'] = $value ? date('H:i:s', strtotime($value)) : null;
     }
 
     /**
@@ -161,6 +167,27 @@ class CustomField extends Model
             $grouped->where('label', 'LIKE', $needle)
                 ->orWhere('name', 'LIKE', $needle);
         });
+    }
+
+    /**
+     * An author's pattern as PCRE wants it.
+     *
+     * The delimiters are added here and the author writes the expression
+     * alone, so a pattern cannot carry modifiers of its own. `u` is set
+     * because answers are UTF-8 and a pattern written against accented text
+     * should behave.
+     */
+    public static function compilePattern(string $pattern): string
+    {
+        return '/'.str_replace('/', '\\/', $pattern).'/u';
+    }
+
+    /**
+     * Only the definitions meant to appear on the printed document.
+     */
+    public function scopeWherePrinted($query)
+    {
+        $query->where('custom_fields.placement', self::PLACEMENT_DOCUMENT);
     }
 
     /**

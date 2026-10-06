@@ -13,8 +13,13 @@ const AdminPdfGenerationView = () => import('./views/settings/AdminPdfGeneration
 const AdminBackupView = () => import('./views/settings/AdminBackupView.vue')
 const AdminFileDiskView = () => import('./views/settings/AdminFileDiskView.vue')
 const AdminFontView = () => import('./views/settings/AdminFontView.vue')
+const AdminCurrenciesView = () =>
+  import('./views/settings/AdminCurrenciesView.vue')
+const AdminRolePresetsView = () =>
+  import('./views/settings/AdminRolePresetsView.vue')
 const AdminUpdateAppView = () => import('./views/settings/AdminUpdateAppView.vue')
 const AdminAppearanceView = () => import('./views/settings/AdminAppearanceView.vue')
+const AdminMcpView = () => import('./views/settings/AdminMcpView.vue')
 
 export const adminRoutes: RouteRecordRaw[] = [
   {
@@ -59,6 +64,14 @@ export const adminRoutes: RouteRecordRaw[] = [
         },
       },
       {
+        path: 'users/create',
+        name: 'admin.users.create',
+        component: AdminUserEditView,
+        meta: {
+          isSuperAdmin: true,
+        },
+      },
+      {
         path: 'users/:id/edit',
         name: 'admin.users.edit',
         component: AdminUserEditView,
@@ -66,6 +79,7 @@ export const adminRoutes: RouteRecordRaw[] = [
           isSuperAdmin: true,
         },
       },
+      // The marketplace, which the client build declares as an empty list.
       ...adminModuleRoutes,
       {
         path: 'settings',
@@ -77,7 +91,7 @@ export const adminRoutes: RouteRecordRaw[] = [
         children: [
           {
             path: '',
-            redirect: 'mail-configuration',
+            redirect: { name: 'admin.settings.mail' },
           },
           {
             path: 'mail-configuration',
@@ -120,6 +134,22 @@ export const adminRoutes: RouteRecordRaw[] = [
             component: AdminFontView,
           },
           {
+            path: 'currencies',
+            name: 'admin.settings.currencies',
+            meta: {
+              isSuperAdmin: true,
+            },
+            component: AdminCurrenciesView,
+          },
+          {
+            path: 'role-presets',
+            name: 'admin.settings.role-presets',
+            meta: {
+              isSuperAdmin: true,
+            },
+            component: AdminRolePresetsView,
+          },
+          {
             path: 'update-app',
             name: 'admin.settings.update',
             meta: {
@@ -134,6 +164,14 @@ export const adminRoutes: RouteRecordRaw[] = [
               isSuperAdmin: true,
             },
             component: AdminAppearanceView,
+          },
+          {
+            path: 'mcp',
+            name: 'admin.settings.mcp',
+            meta: {
+              isSuperAdmin: true,
+            },
+            component: AdminMcpView,
           },
         ],
       },

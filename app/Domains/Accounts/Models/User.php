@@ -538,6 +538,10 @@ class User extends Authenticatable implements HasMedia
     {
         $meta = $data->data;
 
+        if (! empty($meta['hidden'])) {
+            return false;
+        }
+
         if (! empty($meta['super_admin_only'])) {
             return $this->isSuperAdmin();
         }
@@ -547,6 +551,16 @@ class User extends Authenticatable implements HasMedia
         }
 
         if ($meta['owner_only']) {
+            return false;
+        }
+
+        if (! empty($meta['any_abilities'])) {
+            foreach ($meta['any_abilities'] as $requirement) {
+                if ($this->can($requirement['ability'], $requirement['model']) || $this->can($requirement['ability'])) {
+                    return true;
+                }
+            }
+
             return false;
         }
 

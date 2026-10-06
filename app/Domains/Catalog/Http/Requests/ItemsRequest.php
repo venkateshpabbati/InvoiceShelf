@@ -2,7 +2,9 @@
 
 namespace App\Domains\Catalog\Http\Requests;
 
+use App\Domains\Metadata\Http\Requests\Concerns\ValidatesCustomFields;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Validator;
 
 /**
  * Incoming payload for creating or editing a catalog item.
@@ -15,6 +17,8 @@ use Illuminate\Foundation\Http\FormRequest;
  */
 class ItemsRequest extends FormRequest
 {
+    use ValidatesCustomFields;
+
     /**
      * Access is settled by the item policy in the controller.
      */
@@ -37,6 +41,25 @@ class ItemsRequest extends FormRequest
             'price' => ['required'],
             'unit_id' => ['nullable'],
             'description' => ['nullable'],
+            ...$this->customFieldRules(),
         ];
+    }
+
+    public function withValidator(Validator $validator): void
+    {
+        $this->validateCustomFieldAnswers($validator);
+    }
+
+    /**
+     * The columns written to the catalogue item.
+     *
+     * The answers arrive alongside them and are persisted separately, so they
+     * are taken out here rather than left for the model to ignore.
+     *
+     * @return array<string, mixed>
+     */
+    public function getItemPayload(): array
+    {
+        return $this->withoutCustomFields($this->validated());
     }
 }

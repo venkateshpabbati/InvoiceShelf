@@ -49,16 +49,16 @@ class DemoSeeder extends Seeder
 
         $user->assign('owner');
 
-        // Resolve USD by code rather than trusting an id. Migration
-        // 2025_08_18_101343 inserts Algerian Dinar via firstOrCreate() before any
-        // seeder runs, so on a fresh migrate+seed currency id 1 is DZD and the
-        // demo prices everything in "DA".
+        // Resolve USD by code rather than trusting an id. A database upgraded
+        // from 2.x carries whatever order its own migrations produced, and on
+        // one of those id 1 is the Algerian Dinar, so the demo would price
+        // everything in "DA".
         $currencyId = Currency::where('code', 'USD')->value('id') ?? 1;
 
         // Set default user settings
         $user->setSettings([
             'language' => 'en',
-            'timezone' => 'UTC',
+            'time_zone' => 'UTC',
             'date_format' => 'DD-MM-YYYY',
             'currency_id' => $currencyId,
         ]);
@@ -68,10 +68,12 @@ class DemoSeeder extends Seeder
             'currency' => $currencyId,
             'date_format' => 'DD-MM-YYYY',
             'language' => 'en',
-            'timezone' => 'UTC',
+            'time_zone' => 'UTC',
             'fiscal_year' => 'calendar_year',
-            'tax_per_item' => false,
-            'discount_per_item' => false,
+            // The forms show document-level tax and discount controls for NO
+            // only; a false here stored "0" and hid both.
+            'tax_per_item' => 'NO',
+            'discount_per_item' => 'NO',
             'invoice_prefix' => 'INV-',
             'estimate_prefix' => 'EST-',
             'payment_prefix' => 'PAY-',

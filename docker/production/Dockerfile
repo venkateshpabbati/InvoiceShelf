@@ -7,22 +7,28 @@ FROM --platform=$BUILDPLATFORM node:24 AS static_builder
 FROM serversideup/php:8.4-fpm-nginx-alpine AS base
     USER root
     RUN apk add --no-cache bash nano mariadb-client postgresql-client sqlite
-    RUN install-php-extensions exif
-    RUN install-php-extensions pgsql
-    RUN install-php-extensions sqlite3
-    RUN install-php-extensions imagick
-    RUN install-php-extensions mbstring
-    RUN install-php-extensions gd
-    RUN install-php-extensions xml
-    RUN install-php-extensions zip
-    RUN install-php-extensions redis
-    RUN install-php-extensions bcmath
-    RUN install-php-extensions intl
-    RUN install-php-extensions curl
+    # One invocation, not twelve: the tool sets up and tears down its build
+    # environment per call, and several of these compile from source.
+    RUN install-php-extensions \
+        bcmath \
+        curl \
+        exif \
+        gd \
+        imagick \
+        intl \
+        mbstring \
+        pgsql \
+        redis \
+        sqlite3 \
+        xml \
+        zip
 
 FROM base AS production
     ENV AUTORUN_ENABLED=true
     ENV PHP_OPCACHE_ENABLE=1
+    # Turns off the in-app updater: the image is upgraded by pulling a new one.
+    # inject.sh also writes it to .env; this covers INVOICESHELF_DOTENV=false.
+    ENV CONTAINERIZED=true
 
     # Set `www-data` as the user to start FPM
     USER root
@@ -45,6 +51,9 @@ FROM base AS production
     # the image the mount point is created root-owned and every marketplace install
     # dies with "mkdir(): Permission denied". Create it here, as www-data.
     RUN mkdir -p /var/www/html/Modules
+    # The public disk's link, made here so a read-only root has it too. The
+    # entrypoint still repairs it on a writable one.
+    RUN ln -sfn /var/www/html/storage/app/public /var/www/html/public/storage
     # Authenticate composer against GitHub when a token is provided (build secret),
     # so multi-arch builds don't exhaust the unauthenticated API rate limit while the
     # merge-plugin resolves modules. The secret is build-time only (never in the image),
@@ -56,3 +65,10 @@ FROM base AS production
     # Copy entrypoint and inject script, and make sure they are executable
     COPY --chmod=755 docker/production/inject.sh /inject.sh
     COPY --chmod=755 docker/production/entrypoint.d/ /etc/entrypoint.d/
+
+    # Supervise Laravel's scheduler next to nginx and php-fpm. The base image
+    # starts neither a cron daemon nor a scheduler, so without this service
+    # nothing in routes/console.php ever runs: no recurring invoices, no
+    # overdue flagging, no estimate expiry. Set SCHEDULER_ENABLED=false to run
+    # the schedule from somewhere else instead.
+    COPY --chmod=755 docker/production/s6-overlay/ /etc/s6-overlay/

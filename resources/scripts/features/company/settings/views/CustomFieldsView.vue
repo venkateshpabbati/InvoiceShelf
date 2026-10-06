@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useModalStore } from '../../../../stores/modal.store'
 import { useUserStore } from '../../../../stores/user.store'
 import { customFieldService } from '../../../../api/services/custom-field.service'
+import { useCustomFieldModels } from '@/scripts/features/shared/custom-fields/use-custom-field-models'
 import CustomFieldDropdown from '@/scripts/features/company/settings/components/CustomFieldDropdown.vue'
 import CustomFieldModal from '@/scripts/features/company/settings/components/CustomFieldModal.vue'
 
@@ -65,7 +66,7 @@ const customFieldsColumns = computed<TableColumn[]>(() => [
   {
     key: 'actions',
     label: '',
-    tdClass: 'text-right text-sm font-medium',
+    tdClass: 'text-end text-sm font-medium',
     sortable: false,
   },
 ])
@@ -94,7 +95,7 @@ function addCustomField(): void {
   modalStore.openModal({
     title: t('settings.custom_fields.add_custom_field'),
     componentName: 'CustomFieldModal',
-    size: 'sm',
+    size: 'md',
     refreshData: table.value?.refresh,
   })
 }
@@ -103,22 +104,7 @@ function refreshTable(): void {
   table.value?.refresh()
 }
 
-function getModelType(type: string): string {
-  switch (type) {
-    case 'Customer':
-      return t('settings.custom_fields.model_type.customer')
-    case 'Invoice':
-      return t('settings.custom_fields.model_type.invoice')
-    case 'Estimate':
-      return t('settings.custom_fields.model_type.estimate')
-    case 'Expense':
-      return t('settings.custom_fields.model_type.expense')
-    case 'Payment':
-      return t('settings.custom_fields.model_type.payment')
-    default:
-      return type
-  }
-}
+const { labelFor: getModelType } = useCustomFieldModels()
 </script>
 
 <template>
@@ -183,6 +169,25 @@ function getModelType(type: string): string {
           :table="table"
           :load-data="refreshTable"
         />
+      </template>
+      <!-- Nothing here yet: say what goes here and offer to add the first -->
+      <template #empty>
+        <BaseEmptyPlaceholder
+          compact
+          art="field"
+          :ghost="4"
+          :title="$t('settings.custom_fields.empty_title')"
+          :description="$t('settings.custom_fields.empty_description')"
+        >
+          <template v-if="userStore.hasAbilities(ABILITIES.CREATE_CUSTOM_FIELDS)" #actions>
+            <BaseButton variant="primary-outline" @click="addCustomField">
+              <template #left="slotProps">
+                <BaseIcon name="PlusIcon" :class="slotProps.class" />
+              </template>
+              {{ $t('settings.custom_fields.add_custom_field') }}
+            </BaseButton>
+          </template>
+        </BaseEmptyPlaceholder>
       </template>
     </BaseTable>
   </BaseSettingCard>

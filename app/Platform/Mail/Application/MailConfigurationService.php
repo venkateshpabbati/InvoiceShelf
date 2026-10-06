@@ -4,7 +4,10 @@ namespace App\Platform\Mail\Application;
 
 use App\Domains\Accounts\Models\CompanySetting;
 use App\Platform\Mail\Contracts\MailConfigurator;
+use App\Platform\Operations\Managed\ManagedMode;
 use App\Platform\Operations\Models\Setting;
+use App\Rules\PublicHost;
+use App\Support\Net\PrivateNetworkGuard;
 use Aws\Sdk;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Mail;
@@ -16,6 +19,17 @@ use Symfony\Component\Mailer\Bridge\Postmark\Transport\PostmarkTransportFactory;
 class MailConfigurationService implements MailConfigurator
 {
     public const DEFAULT_DRIVER = 'sendmail';
+
+    /**
+     * Stands in for a stored secret in every configuration sent to the
+     * browser. A save that returns it unchanged keeps the stored value.
+     */
+    public const SECRET_MASK = '********';
+
+    /**
+     * The only Mailgun API hosts there are (US and EU regions).
+     */
+    public const MAILGUN_ENDPOINTS = ['api.mailgun.net', 'api.eu.mailgun.net'];
 
     private const GLOBAL_SCOPE = 'global';
 
@@ -43,9 +57,9 @@ class MailConfigurationService implements MailConfigurator
             'mail_local_domain',
         ],
         'mail' => [],
-        'sendmail' => [
-            'mail_sendmail_path',
-        ],
+        // The sendmail binary comes from MAIL_SENDMAIL_PATH alone. Whatever is
+        // configured there is run as a command, so it never comes from a form.
+        'sendmail' => [],
         'ses' => [
             'mail_ses_key',
             'mail_ses_secret',
@@ -61,6 +75,16 @@ class MailConfigurationService implements MailConfigurator
             'mail_postmark_token',
             'mail_postmark_message_stream_id',
         ],
+    ];
+
+    /**
+     * Fields that are credentials: never sent back once stored.
+     */
+    private const SECRET_FIELDS = [
+        'mail_password',
+        'mail_ses_secret',
+        'mail_mailgun_secret',
+        'mail_postmark_token',
     ];
 
     private const BASE_FIELDS = [
@@ -104,7 +128,9 @@ class MailConfigurationService implements MailConfigurator
 
     public function saveGlobalConfig(array $payload): void
     {
-        Setting::setSettings($this->prepareSettingsForStorage($payload, self::GLOBAL_SCOPE));
+        $current = Setting::getSettings($this->getGlobalSettingKeys())->all();
+
+        Setting::setSettings($this->prepareSettingsForStorage($payload, self::GLOBAL_SCOPE, $current));
     }
 
     public function saveCompanyConfig(int|string $companyId, array $payload): void
@@ -117,16 +143,26 @@ class MailConfigurationService implements MailConfigurator
             return;
         }
 
-        CompanySetting::setSettings(
-            $this->prepareSettingsForStorage($payload, self::COMPANY_SCOPE) + [
-                'use_custom_mail_config' => 'YES',
-            ],
-            $companyId
+        $current = CompanySetting::getSettings($this->getCompanySettingKeys(), $companyId)->all();
+
+        // company_settings.value is NOT NULL; a blank optional field is stored
+        // as an empty string, which the apply step already reads as unset.
+        $settings = array_map(
+            fn (mixed $value): mixed => $value ?? '',
+            $this->prepareSettingsForStorage($payload, self::COMPANY_SCOPE, $current)
         );
+
+        CompanySetting::setSettings($settings + ['use_custom_mail_config' => 'YES'], $companyId);
     }
 
     public function applyGlobalConfig(): void
     {
+        // On a managed install the provider sets the transport in the
+        // environment; stored settings never override it.
+        if (ManagedMode::enabled()) {
+            return;
+        }
+
         $settings = Setting::getSettings($this->getGlobalSettingKeys())->all();
 
         $this->applyStoredSettings($settings, self::GLOBAL_SCOPE);
@@ -135,17 +171,77 @@ class MailConfigurationService implements MailConfigurator
     public function applyCompanyConfig(int|string $companyId): void
     {
         $settings = CompanySetting::getSettings($this->getCompanySettingKeys(), $companyId)->all();
+        $ownTransport = ($settings['use_custom_mail_config'] ?? 'NO') === 'YES';
 
-        if (($settings['use_custom_mail_config'] ?? 'NO') !== 'YES') {
+        // Read by OutgoingSender: mail through a company's own server keeps
+        // the sender the user chose.
+        Config::set('mail.company_transport', $ownTransport);
+
+        if (! $ownTransport) {
             return;
         }
 
         $this->applyStoredSettings($settings, self::COMPANY_SCOPE);
     }
 
-    public function validationRules(?string $driver, bool $allowDisabledCustomConfig = false): array
+    /**
+     * The drivers a company may choose for its own mail: SMTP alone on a
+     * managed install, where the provider runs every other transport.
+     *
+     * @return list<string>
+     */
+    public function getCompanyDrivers(): array
     {
-        $availableDrivers = $this->getAvailableDrivers();
+        return ManagedMode::enabled() ? ['smtp'] : $this->getAvailableDrivers();
+    }
+
+    /**
+     * The field of a company's stored custom configuration that points the
+     * server at a private or reserved address, or null when there is none.
+     *
+     * Save-time validation holds new values to the public network; this checks
+     * values saved before that rule existed.
+     */
+    public function companyPrivateTarget(int|string $companyId): ?string
+    {
+        $settings = CompanySetting::getSettings($this->getCompanySettingKeys(), $companyId)->all();
+
+        if (($settings['use_custom_mail_config'] ?? 'NO') !== 'YES') {
+            return null;
+        }
+
+        $stored = fn (string $field): string => (string) ($this->resolveStoredValue($settings, self::COMPANY_SCOPE, $field) ?? '');
+
+        return match ($settings[$this->storedKey(self::COMPANY_SCOPE, 'mail_driver')] ?? null) {
+            'smtp' => collect(['mail_host', 'mail_url'])->first(function (string $field) use ($stored): bool {
+                $host = $stored($field) === '' ? null : PublicHost::hostOf($stored($field));
+
+                return $host !== null
+                    && ! PrivateNetworkGuard::isExempt('mail', $host)
+                    && PublicHost::isBlocked($host);
+            }),
+            'mailgun' => in_array($stored('mail_mailgun_endpoint'), self::MAILGUN_ENDPOINTS, true) ? null : 'mail_mailgun_endpoint',
+            default => null,
+        };
+    }
+
+    /**
+     * Rules for a submitted mail configuration.
+     *
+     * With $allowPrivateHosts off, every connection target must be publicly
+     * routable, or one of the private hosts named in MAIL_ALLOWED_PRIVATE_HOSTS:
+     * the SMTP host and DSN, and the Mailgun endpoint, which may then only be
+     * one of Mailgun's own hosts. That is how company owners are held; the
+     * super administrator keeps the private network, where a local relay is an
+     * ordinary setup.
+     *
+     * With $managed on (a company's own server on a managed install), only
+     * SMTP is offered, on a submission port with TLS, and no DSN, which
+     * would bypass the host and port rules.
+     */
+    public function validationRules(?string $driver, bool $allowDisabledCustomConfig = false, bool $allowPrivateHosts = true, bool $managed = false): array
+    {
+        $availableDrivers = $managed ? ['smtp'] : $this->getAvailableDrivers();
         $driver = $this->normalizeRequestedDriver($driver, $availableDrivers);
 
         $rules = [
@@ -166,20 +262,21 @@ class MailConfigurationService implements MailConfigurator
             ];
         }
 
+        $publicOnly = $allowPrivateHosts ? [] : [new PublicHost(exemptFor: 'mail')];
+
         return array_merge($rules, match ($driver) {
             'smtp' => [
-                'mail_host' => ['required', 'string'],
-                'mail_port' => ['required', 'integer'],
+                'mail_host' => ['required', 'string', ...$publicOnly],
+                'mail_port' => ['required', 'integer', ...($managed ? [Rule::in([465, 587, 2525])] : [])],
                 'mail_username' => ['nullable', 'string'],
                 'mail_password' => ['nullable', 'string'],
-                'mail_encryption' => ['nullable', 'string', Rule::in(['none', 'tls', 'ssl'])],
+                'mail_encryption' => $managed
+                    ? ['required', 'string', Rule::in(['tls', 'ssl'])]
+                    : ['nullable', 'string', Rule::in(['none', 'tls', 'ssl'])],
                 'mail_scheme' => ['nullable', 'string', Rule::in(['smtp', 'smtps'])],
-                'mail_url' => ['nullable', 'string'],
+                'mail_url' => $managed ? ['prohibited'] : ['nullable', 'string', ...$publicOnly],
                 'mail_timeout' => ['nullable', 'integer'],
                 'mail_local_domain' => ['nullable', 'string'],
-            ],
-            'sendmail' => [
-                'mail_sendmail_path' => ['nullable', 'string'],
             ],
             'ses' => [
                 'mail_ses_key' => ['required', 'string'],
@@ -189,7 +286,7 @@ class MailConfigurationService implements MailConfigurator
             'mailgun' => [
                 'mail_mailgun_domain' => ['required', 'string'],
                 'mail_mailgun_secret' => ['required', 'string'],
-                'mail_mailgun_endpoint' => ['required', 'string'],
+                'mail_mailgun_endpoint' => ['required', 'string', ...($allowPrivateHosts ? [] : [Rule::in(self::MAILGUN_ENDPOINTS)])],
                 'mail_mailgun_scheme' => ['nullable', 'string', Rule::in(['https', 'api'])],
             ],
             'postmark' => [
@@ -242,13 +339,18 @@ class MailConfigurationService implements MailConfigurator
         ];
 
         foreach (self::DRIVER_FIELDS[$driver] as $field) {
-            $payload[$field] = $this->resolveStoredValue($settings, $scope, $field);
+            $value = $this->resolveStoredValue($settings, $scope, $field);
+
+            $payload[$field] = $this->isSecret($field) && filled($value) ? self::SECRET_MASK : $value;
         }
 
         return $payload;
     }
 
-    private function prepareSettingsForStorage(array $payload, string $scope): array
+    /**
+     * @param  array<string, mixed>  $current  The settings stored now, so a secret sent back masked keeps its value.
+     */
+    private function prepareSettingsForStorage(array $payload, string $scope, array $current): array
     {
         $driver = $this->normalizeRequestedDriver($payload['mail_driver'] ?? null, $this->getAvailableDrivers());
 
@@ -259,10 +361,13 @@ class MailConfigurationService implements MailConfigurator
         ];
 
         foreach (self::DRIVER_FIELDS[$driver] as $field) {
-            $settings[$this->storedKey($scope, $field)] = $this->normalizeStoredValue(
-                $field,
-                $payload[$field] ?? $this->getDefaultValue($field)
-            );
+            $value = $payload[$field] ?? $this->getDefaultValue($field);
+
+            if ($this->isSecret($field) && $value === self::SECRET_MASK) {
+                $value = $this->resolveStoredValue($current, $scope, $field);
+            }
+
+            $settings[$this->storedKey($scope, $field)] = $this->normalizeStoredValue($field, $value);
         }
 
         return $settings;
@@ -280,7 +385,6 @@ class MailConfigurationService implements MailConfigurator
 
         match ($driver) {
             'smtp' => $this->applySmtpSettings($settings, $scope),
-            'sendmail' => $this->applySendmailSettings($settings, $scope),
             'ses' => $this->applySesSettings($settings, $scope),
             'mailgun' => $this->applyMailgunSettings($settings, $scope),
             'postmark' => $this->applyPostmarkSettings($settings, $scope),
@@ -304,11 +408,6 @@ class MailConfigurationService implements MailConfigurator
         Config::set('mail.mailers.smtp.url', $this->nullIfBlank($this->resolveStoredValue($settings, $scope, 'mail_url')));
         Config::set('mail.mailers.smtp.timeout', $this->nullIfBlank($this->resolveStoredValue($settings, $scope, 'mail_timeout')));
         Config::set('mail.mailers.smtp.local_domain', $this->nullIfBlank($this->resolveStoredValue($settings, $scope, 'mail_local_domain')));
-    }
-
-    private function applySendmailSettings(array $settings, string $scope): void
-    {
-        Config::set('mail.mailers.sendmail.path', $this->resolveStoredValue($settings, $scope, 'mail_sendmail_path'));
     }
 
     private function applySesSettings(array $settings, string $scope): void
@@ -357,6 +456,11 @@ class MailConfigurationService implements MailConfigurator
         return $this->getDefaultValue($field);
     }
 
+    private function isSecret(string $field): bool
+    {
+        return in_array($field, self::SECRET_FIELDS, true);
+    }
+
     private function storedKey(string $scope, string $field): string
     {
         return $scope === self::COMPANY_SCOPE ? "company_{$field}" : $field;
@@ -372,7 +476,6 @@ class MailConfigurationService implements MailConfigurator
             'mail_port' => config('mail.mailers.smtp.port', 587),
             'mail_username', 'mail_password', 'mail_scheme', 'mail_url', 'mail_timeout', 'mail_local_domain' => '',
             'mail_encryption' => config('mail.mailers.smtp.encryption', 'none'),
-            'mail_sendmail_path' => config('mail.mailers.sendmail.path', '/usr/sbin/sendmail -bs -i'),
             'mail_ses_key' => config('services.ses.key', ''),
             'mail_ses_secret' => config('services.ses.secret', ''),
             'mail_ses_region' => config('services.ses.region', 'us-east-1'),
@@ -420,7 +523,6 @@ class MailConfigurationService implements MailConfigurator
             'mail_postmark_message_stream_id' => $value === '' ? '' : $value,
             'mail_mailgun_endpoint' => $value === '' ? 'api.mailgun.net' : $value,
             'mail_mailgun_scheme' => $value === '' ? 'https' : $value,
-            'mail_sendmail_path' => $value === '' ? '/usr/sbin/sendmail -bs -i' : $value,
             'mail_ses_region' => $value === '' ? 'us-east-1' : $value,
             'mail_encryption' => $value === '' ? 'none' : $value,
             default => $value,

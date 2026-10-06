@@ -17,6 +17,7 @@ use App\Platform\Mail\Models\EmailLog;
 use App\Platform\Pdf\Concerns\GeneratesPdf;
 use App\Platform\Pdf\Rendering\PdfHtmlSanitizer;
 use App\Platform\Pdf\Rendering\PdfTemplateUtils;
+use App\Support\MoneyConversion;
 use App\Support\SafeOrderBy;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -208,7 +209,7 @@ class Invoice extends Model implements HasMedia
      */
     public function payments(): BelongsToMany
     {
-        return $this->belongsToMany(Payment::class, 'payment_allocations')
+        return $this->belongsToMany(Payment::class, 'customer_payment_allocations')
             ->withPivot(['amount', 'base_amount'])
             ->withTimestamps();
     }
@@ -832,7 +833,7 @@ class Invoice extends Model implements HasMedia
     private function restateBalance(int|float $outstanding): void
     {
         $this->due_amount = $outstanding;
-        $this->base_due_amount = $outstanding * $this->exchange_rate;
+        $this->base_due_amount = MoneyConversion::toBaseMinor($outstanding, $this->exchange_rate);
 
         $this->changeInvoiceStatus($outstanding);
     }

@@ -1,14 +1,14 @@
 <template>
-  <div class="md:grid-cols-12 grid-cols-1 md:gap-x-6 mt-6 mb-8 grid gap-y-5">
+  <div class="grid grid-cols-1 mt-5 mb-6 md:grid-cols-12 md:gap-x-6 gap-y-4 md:gap-y-5 md:mb-8">
     <BaseCustomerSelectPopup
       :valid="v.customer_id"
       :content-loading="isLoading"
       type="estimate"
-      class="col-span-6 pr-0"
+      class="col-span-6 pe-0"
     />
 
     <BaseInputGrid
-      class="col-span-6 rounded-xl shadow border border-line-light bg-surface p-5"
+      class="col-span-6 p-4 border glass rounded-xl md:p-5"
     >
       <BaseInputGroup
         :label="$t('reports.estimates.estimate_date')"
@@ -58,6 +58,14 @@
         :is-edit="isEdit"
         :customer-currency="estimateStore.newEstimate.currency_id"
       />
+      <!-- Document-level custom fields sit with the number and the dates:
+           they are attributes of the document, not a separate section. -->
+      <CustomFieldInput
+        v-for="field in customFields"
+        :key="field.id"
+        :custom-field-scope="customFieldScope"
+        :field="field"
+      />
     </BaseInputGrid>
   </div>
 </template>
@@ -65,6 +73,8 @@
 <script setup lang="ts">
 import { ExchangeRateConverter } from '../../../shared/document-form'
 import { useEstimateStore } from '../store'
+import CustomFieldInput from '@/scripts/features/shared/custom-fields/CustomFieldInput.vue'
+import { useCustomFields } from '@/scripts/features/shared/custom-fields/use-custom-fields'
 
 interface ValidationField {
   $error: boolean
@@ -78,10 +88,19 @@ interface Props {
   isEdit?: boolean
 }
 
-withDefaults(defineProps<Props>(), {
+const props = withDefaults(defineProps<Props>(), {
   isLoading: false,
   isEdit: false,
 })
 
 const estimateStore = useEstimateStore()
+
+const customFieldScope = 'newEstimate'
+
+const customFields = useCustomFields({
+  store: estimateStore,
+  storeProp: 'newEstimate',
+  type: 'Estimate',
+  isEdit: () => props.isEdit === true,
+})
 </script>

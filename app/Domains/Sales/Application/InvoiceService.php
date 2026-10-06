@@ -13,12 +13,12 @@ use App\Domains\Sales\Contracts\InvoicePdfDataProvider;
 use App\Domains\Sales\Mail\SendInvoiceMail;
 use App\Domains\Sales\Models\Estimate;
 use App\Domains\Sales\Models\Invoice;
-use App\Facades\Hashids;
 use App\Platform\Mail\Contracts\MailConfigurator;
 use App\Platform\Pdf\Facades\Pdf;
 use App\Platform\Pdf\Rendering\PdfMetadata;
 use App\Platform\Pdf\Rendering\PdfTemplateUtils;
-use App\Support\Hashids\HashidConnection;
+use App\Support\MoneyConversion;
+use App\Support\PublicToken;
 use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\View;
@@ -66,7 +66,7 @@ class InvoiceService implements InvoicePdfDataProvider
             'sequence_number' => $serial->nextSequenceNumber,
             'customer_sequence_number' => $serial->nextCustomerSequenceNumber,
         ]);
-        $invoice->unique_hash = Hashids::connection(HashidConnection::Invoice->value)->encode($invoice->id);
+        $invoice->unique_hash = PublicToken::make();
         $invoice->save();
 
         $this->documentItemService->createItems($invoice, $items);
@@ -129,7 +129,7 @@ class InvoiceService implements InvoicePdfDataProvider
         }
 
         $attributes['due_amount'] = ($invoice->due_amount + $oldTotal);
-        $attributes['base_due_amount'] = $attributes['due_amount'] * $attributes['exchange_rate'];
+        $attributes['base_due_amount'] = MoneyConversion::toBaseMinor($attributes['due_amount'], $attributes['exchange_rate']);
         $attributes['customer_sequence_number'] = $serial->nextCustomerSequenceNumber;
 
         $invoice->update($attributes);
@@ -289,7 +289,26 @@ class InvoiceService implements InvoicePdfDataProvider
 
         $company = Company::find($invoice->company_id);
         $language = CompanySetting::getSetting('language', $company->id);
-        $customFields = CustomField::query()->where('model_type', 'Item')->get();
+        // Scoped to this document's company: the definitions become column
+        // headers on the rendered page, so an unscoped lookup would print one
+        // tenant's field labels on another's documents. Not whereCompany(),
+        // which reads the request header and so is wrong for a portal
+        // download or a queued mail job.
+        $customFields = CustomField::query()
+            ->where('company_id', $invoice->company_id)
+            ->where('model_type', 'Item')
+            ->wherePrinted()
+            ->get();
+
+        // Document-level definitions the author asked to have printed. They
+        // render in the details block beside the number and the dates, which
+        // is where a custom date belongs (#237).
+        $documentFields = CustomField::query()
+            ->where('company_id', $invoice->company_id)
+            ->where('model_type', 'Invoice')
+            ->wherePrinted()
+            ->orderBy('order')
+            ->get();
 
         App::setLocale($language);
 
@@ -299,6 +318,7 @@ class InvoiceService implements InvoicePdfDataProvider
         View::share([
             'invoice' => $invoice,
             'customFields' => $customFields,
+            'documentFields' => $documentFields,
             'company_address' => $invoice->getCompanyAddress(),
             'shipping_address' => $invoice->getCustomerShippingAddress(),
             'billing_address' => $invoice->getCustomerBillingAddress(),
@@ -375,19 +395,19 @@ class InvoiceService implements InvoicePdfDataProvider
             'paid_status' => Invoice::STATUS_UNPAID,
             'due_amount' => $invoice->total,
             'exchange_rate' => $exchangeRate,
-            'base_total' => $invoice->total * $exchangeRate,
-            'base_discount_val' => $invoice->discount_val * $exchangeRate,
-            'base_sub_total' => $invoice->sub_total * $exchangeRate,
-            'base_tax' => $invoice->tax * $exchangeRate,
-            'base_due_amount' => $invoice->total * $exchangeRate,
+            'base_total' => MoneyConversion::toBaseMinor($invoice->total, $exchangeRate),
+            'base_discount_val' => MoneyConversion::toBaseMinor($invoice->discount_val, $exchangeRate),
+            'base_sub_total' => MoneyConversion::toBaseMinor($invoice->sub_total, $exchangeRate),
+            'base_tax' => MoneyConversion::toBaseMinor($invoice->tax, $exchangeRate),
+            'base_due_amount' => MoneyConversion::toBaseMinor($invoice->total, $exchangeRate),
             ...$carriedOver,
         ]);
 
-        $newInvoice->unique_hash = Hashids::connection(HashidConnection::Invoice->value)->encode($newInvoice->id);
+        $newInvoice->unique_hash = PublicToken::make();
         $newInvoice->save();
 
         $invoice->load('items.taxes');
-        $this->documentItemService->createItems($newInvoice, $invoice->items->toArray());
+        $this->documentItemService->createItems($newInvoice, $this->documentItemService->itemsForCopy($invoice));
 
         if ($invoice->taxes) {
             $this->documentItemService->createTaxes($newInvoice, $invoice->taxes->toArray());
@@ -448,17 +468,17 @@ class InvoiceService implements InvoicePdfDataProvider
             'template_name' => $invoice->getEstimateTemplateName(),
             'status' => Estimate::STATUS_DRAFT,
             'exchange_rate' => $exchangeRate,
-            'base_discount_val' => $invoice->discount_val * $exchangeRate,
-            'base_sub_total' => $invoice->sub_total * $exchangeRate,
-            'base_total' => $invoice->total * $exchangeRate,
-            'base_tax' => $invoice->tax * $exchangeRate,
+            'base_discount_val' => MoneyConversion::toBaseMinor($invoice->discount_val, $exchangeRate),
+            'base_sub_total' => MoneyConversion::toBaseMinor($invoice->sub_total, $exchangeRate),
+            'base_total' => MoneyConversion::toBaseMinor($invoice->total, $exchangeRate),
+            'base_tax' => MoneyConversion::toBaseMinor($invoice->tax, $exchangeRate),
             ...$carriedOver,
         ]);
 
-        $estimate->unique_hash = Hashids::connection(HashidConnection::Estimate->value)->encode($estimate->id);
+        $estimate->unique_hash = PublicToken::make();
         $estimate->save();
 
-        $this->documentItemService->createItems($estimate, $invoice->items->toArray());
+        $this->documentItemService->createItems($estimate, $this->documentItemService->itemsForCopy($invoice));
 
         if ($invoice->taxes) {
             $this->documentItemService->createTaxes($estimate, $invoice->taxes->toArray());

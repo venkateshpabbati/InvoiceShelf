@@ -19,6 +19,7 @@ import { useCompanyStore } from '../../../../stores/company.store'
 import { useGlobalStore } from '../../../../stores/global.store'
 import { useNotificationStore } from '../../../../stores/notification.store'
 import CopyInputField from '@/scripts/features/company/customers/components/CopyInputField.vue'
+import { customerBaseUrl } from '@/scripts/utils/documents'
 
 // These stores are needed for auto-selecting customer after creation
 import { useEstimateStore } from '@/scripts/features/company/estimates/store'
@@ -40,8 +41,6 @@ const { t } = useI18n()
 const route = useRoute()
 const isEdit = ref<boolean>(false)
 const isLoading = ref<boolean>(false)
-const isShowPassword = ref<boolean>(false)
-const isShowConfirmPassword = ref<boolean>(false)
 
 const modalActive = computed<boolean>(
   () => modalStore.active && modalStore.componentName === 'CustomerModal'
@@ -129,7 +128,7 @@ const v$ = useVuelidate(
 )
 
 const getCustomerPortalUrl = computed<string>(() => {
-  return `${window.location.origin}/${companyStore.selectedCompany?.slug}/customer/login`
+  return `${customerBaseUrl()}/${companyStore.selectedCompany?.slug}/customer/login`
 })
 
 function copyAddress(): void {
@@ -189,6 +188,8 @@ async function submitCustomerData(): Promise<void> {
       ) {
         recurringInvoiceStore.selectCustomer(response.data.id)
       }
+      // Anywhere else, whoever opened the modal selects it
+      modalStore.refreshData?.(response.data)
       closeCustomerModal()
     }
   } catch {
@@ -208,18 +209,12 @@ function closeCustomerModal(): void {
 <template>
   <BaseModal
     :show="modalActive"
+    closable
     @close="closeCustomerModal"
     @open="setInitialData"
   >
     <template #header>
-      <div class="flex justify-between w-full">
-        {{ modalStore.title }}
-        <BaseIcon
-          name="XMarkIcon"
-          class="h-6 w-6 text-muted cursor-pointer"
-          @click="closeCustomerModal"
-        />
-      </div>
+      {{ modalStore.title }}
     </template>
     <form action="" @submit.prevent="submitCustomerData">
       <div class="px-6 pb-3 max-h-[calc(80vh-8rem)] overflow-y-auto">
@@ -364,19 +359,12 @@ function closeCustomerModal(): void {
                 <BaseInput
                   v-model.trim="customerStore.currentCustomer.password"
                   :content-loading="isFetchingInitialData"
-                  :type="isShowPassword ? 'text' : 'password'"
+                  type="password"
+                  revealable
                   name="password"
                   :invalid="v$.password.$error"
                   @input="v$.password.$touch()"
-                >
-                  <template #right>
-                    <BaseIcon
-                      :name="isShowPassword ? 'EyeIcon' : 'EyeSlashIcon'"
-                      class="mr-1 text-muted cursor-pointer"
-                      @click="isShowPassword = !isShowPassword"
-                    />
-                  </template>
-                </BaseInput>
+                />
               </BaseInputGroup>
 
               <BaseInputGroup
@@ -391,19 +379,12 @@ function closeCustomerModal(): void {
                 <BaseInput
                   v-model.trim="customerStore.currentCustomer.confirm_password"
                   :content-loading="isFetchingInitialData"
-                  :type="isShowConfirmPassword ? 'text' : 'password'"
+                  type="password"
+                  revealable
                   name="confirm_password"
                   :invalid="v$.confirm_password.$error"
                   @input="v$.confirm_password.$touch()"
-                >
-                  <template #right>
-                    <BaseIcon
-                      :name="isShowConfirmPassword ? 'EyeIcon' : 'EyeSlashIcon'"
-                      class="mr-1 text-muted cursor-pointer"
-                      @click="isShowConfirmPassword = !isShowConfirmPassword"
-                    />
-                  </template>
-                </BaseInput>
+                />
               </BaseInputGroup>
             </BaseInputGrid>
           </BaseTab>
@@ -631,7 +612,7 @@ function closeCustomerModal(): void {
         class="z-0 flex justify-end p-4 border-t border-line-default border-solid"
       >
         <BaseButton
-          class="mr-3 text-sm"
+          class="me-3 text-sm"
           type="button"
           variant="primary-outline"
           @click="closeCustomerModal"

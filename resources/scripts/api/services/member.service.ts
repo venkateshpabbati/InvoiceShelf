@@ -15,6 +15,8 @@ export interface MemberListResponse {
     last_page: number
     per_page: number
     total: number
+    /** Everyone in the company, the viewer included, whatever the filters */
+    user_total_count?: number
   }
 }
 
@@ -22,6 +24,7 @@ export interface UpdateMemberPayload {
   name?: string
   email?: string
   phone?: string | null
+  password?: string
   role?: string | null
   companies?: Array<{
     id: number

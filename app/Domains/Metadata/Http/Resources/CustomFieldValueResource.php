@@ -2,10 +2,7 @@
 
 namespace App\Domains\Metadata\Http\Resources;
 
-use App\Domains\Accounts\Http\Resources\CompanyResource;
-use App\Domains\Accounts\Models\CompanySetting;
 use App\Platform\Persistence\ModelIdentityMap;
-use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -59,10 +56,6 @@ class CustomFieldValueResource extends JsonResource
                 $value->customField()->exists(),
                 fn () => new CustomFieldResource($value->customField)
             ),
-            'company' => $this->when(
-                $value->company()->exists(),
-                fn () => new CompanyResource($value->company)
-            ),
         ];
     }
 
@@ -82,25 +75,10 @@ class CustomFieldValueResource extends JsonResource
      * the emptiness check, so a row carrying no type at all fails here rather
      * than returning null; and a company with no date format on file hands a
      * null format down to the formatter, which rejects it -- a dated answer
-     * belonging to such a company cannot be serialised at all.
+     * belonging to such a company gets the stored value instead.
      */
     public function dateTimeFormat()
     {
-        $value = $this->resource;
-
-        $column = getCustomFieldValueKey($value->type);
-        $answer = $value->default_answer;
-
-        if (! $answer) {
-            return null;
-        }
-
-        return match ($column) {
-            'date_time_answer' => Carbon::parse($answer)->format('Y-m-d H:i'),
-            'date_answer' => Carbon::parse($answer)->format(
-                CompanySetting::getSetting('carbon_date_format', $value->company_id)
-            ),
-            default => $answer,
-        };
+        return $this->resource->formatted_answer;
     }
 }
